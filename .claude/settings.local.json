@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv sync:*)",
+      "Bash(venv/Scripts/python -m pytest tests/test_foundation.py -v)",
+      "Bash(venv/Scripts/python -m pytest tests/test_foundation.py -v --tb=short)"
+    ]
+  }
+}

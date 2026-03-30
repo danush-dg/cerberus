@@ -1,0 +1,12 @@
+.env
+cerberus-key.json
+__pycache__/
+.pytest_cache/
+chroma_db/
+logs/
+*.pyc
+.venv/
+*.egg-info/
+dist/
+build/
+.DS_Store
