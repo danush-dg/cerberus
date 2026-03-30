@@ -1,0 +1,50 @@
+[
+  {
+    "resource_id": "vm-test-001",
+    "resource_type": "vm",
+    "region": "us-central1",
+    "creation_timestamp": "2024-01-15T00:00:00Z",
+    "last_activity_timestamp": "2024-02-01T00:00:00Z",
+    "estimated_monthly_cost": 45.50,
+    "ownership_status": "active_owner",
+    "owner_email": "alice@nexus.tech",
+    "owner_iam_active": true,
+    "flagged_for_review": false,
+    "decision": null,
+    "reasoning": null,
+    "estimated_monthly_savings": null,
+    "outcome": null
+  },
+  {
+    "resource_id": "disk-orphan-002",
+    "resource_type": "orphaned_disk",
+    "region": "us-east1",
+    "creation_timestamp": "2023-11-01T00:00:00Z",
+    "last_activity_timestamp": null,
+    "estimated_monthly_cost": 12.00,
+    "ownership_status": "no_owner",
+    "owner_email": null,
+    "owner_iam_active": null,
+    "flagged_for_review": true,
+    "decision": null,
+    "reasoning": null,
+    "estimated_monthly_savings": null,
+    "outcome": null
+  },
+  {
+    "resource_id": "ip-unused-003",
+    "resource_type": "unused_ip",
+    "region": "us-west1",
+    "creation_timestamp": "2024-03-01T00:00:00Z",
+    "last_activity_timestamp": null,
+    "estimated_monthly_cost": 7.20,
+    "ownership_status": "departed_owner",
+    "owner_email": "bob@nexus.tech",
+    "owner_iam_active": false,
+    "flagged_for_review": false,
+    "decision": null,
+    "reasoning": null,
+    "estimated_monthly_savings": null,
+    "outcome": null
+  }
+]
