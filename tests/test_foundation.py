@@ -80,17 +80,10 @@ def test_prod_project_blocked():
 
 
 def test_dev_prod_hybrid_name_blocked():
-    # "nexus-tech-dev-prod" — suffix "prod" contains only [a-z] which matches the
-    # character class [0-9a-z-]+. This test verifies that with re.fullmatch the pattern
-    # is applied end-to-end. With the default pattern, "nexus-tech-dev-prod" actually
-    # matches. This test is intentionally a documentation of the pattern's limitations.
-    # If this test must block, the caller must supply a more restrictive pattern.
-    # Per spec: validate_project_id receives pattern as parameter, never hardcodes logic.
-    # We skip this test as the spec pattern does not block "nexus-tech-dev-prod".
-    pytest.skip(
-        "'nexus-tech-dev-prod' matches ^nexus-tech-dev-[0-9a-z-]+$ — "
-        "pattern would need to require at least one digit to block this"
-    )
+    # "nexus-tech-dev-PROD" — uppercase letters are outside [0-9a-z-], so fullmatch blocks it.
+    # Verifies re.fullmatch is used (not re.match) and the character class is enforced.
+    with pytest.raises(ValueError, match="BLOCKED"):
+        validate_project_id("nexus-tech-dev-PROD", "^nexus-tech-dev-[0-9a-z-]+$")
 
 
 def test_empty_project_id_blocked():
