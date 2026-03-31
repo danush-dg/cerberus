@@ -191,6 +191,7 @@ cerberus/nodes/approve_node.py
 cerberus/nodes/revalidate_node.py
 cerberus/nodes/execute_node.py
 cerberus/nodes/audit_node.py
+cerberus/nodes/access_node.py
 cerberus/tools/__init__.py
 cerberus/tools/gcp_retry.py
 cerberus/tools/chroma_client.py
@@ -204,6 +205,7 @@ tests/test_execute.py
 tests/test_audit.py
 tests/test_graph.py
 tests/test_e2e.py
+tests/test_access.py
 tests/fixtures/sample_resources.json
 frontend/src/components/ApprovalTable.tsx
 frontend/src/components/ExecutePanel.tsx
