@@ -289,3 +289,38 @@ async def get_summary(run_id: str) -> JSONResponse:
         langsmith_trace_url=final_state.get("langsmith_trace_url"),
     )
     return JSONResponse(status_code=200, content=summary.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# IAM Access Head endpoint (Task 9.1 UI)
+# ---------------------------------------------------------------------------
+
+
+class IamSynthesizeRequest(BaseModel):
+    requester_email: str
+    request_text: str
+    project_id: str
+
+
+@app.post("/iam/synthesize")
+async def post_iam_synthesize(req: IamSynthesizeRequest) -> JSONResponse:
+    """Synthesize a least-privilege IAM provisioning plan from a natural-language request.
+
+    INV-SEC-01: project_id is validated before any Gemini call.
+    INV-SEC-02: no credential fields in response.
+    """
+    from cerberus.nodes.access_node import synthesize_iam_request, IamRequest
+    try:
+        plan = synthesize_iam_request(
+            IamRequest(
+                requester_email=req.requester_email,
+                request_text=req.request_text,
+                project_id=req.project_id,
+            )
+        )
+        return JSONResponse(status_code=200, content=plan.model_dump())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except Exception as exc:
+        logger.exception("IAM synthesis failed")
+        return JSONResponse(status_code=500, content={"error": str(exc)})

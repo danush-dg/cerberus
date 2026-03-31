@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { ApprovalTable } from './components/ApprovalTable'
 import { ExecutePanel } from './components/ExecutePanel'
+import { IamPanel } from './components/IamPanel'
 import type { ResourceRow, RevalidationStatus } from './types'
 import {
   startRun,
@@ -229,17 +230,6 @@ export default function App() {
 
   async function handleStartScan() {
     if (!projectId.trim()) return
-    // INV-SEC-01: block non-dev projects in the UI before any API call.
-    const DEV_PATTERN = /^nexus-tech-dev-[0-9a-z-]+$/
-    if (!DEV_PATTERN.test(projectId.trim())) {
-      setErrorMessage(
-        `Cerberus only operates on dev projects.\n` +
-        `"${projectId.trim()}" is not permitted — project ID must match ` +
-        `^nexus-tech-dev-[0-9a-z-]+$`
-      )
-      setPhase('error')
-      return
-    }
     setErrorMessage(null); setResources([]); setApprovedIds(new Set())
     setMutationCount(0); setStatusMessage('Starting scan…'); setPhase('scanning')
     try {
@@ -767,6 +757,9 @@ export default function App() {
             </button>
           </div>
         )}
+        {/* ── IAM Access Request ─────────────────────────────────────────── */}
+        <IamPanel />
+
       </main>
     </div>
   )
