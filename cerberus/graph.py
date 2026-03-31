@@ -157,7 +157,9 @@ def _build_graph(
     builder.add_node("scan_node", _wrap_node(scan, "scan_node"))
     builder.add_node("enrich_node", _wrap_node(enrich, "enrich_node"))
     builder.add_node("reason_node", _wrap_node(reason, "reason_node"))
-    builder.add_node("approve_node", _wrap_node(approve, "approve_node"))
+    # approve_node uses interrupt() which requires direct LangGraph context access —
+    # must NOT be wrapped (interrupt() calls get_config() internally).
+    builder.add_node("approve_node", approve)
     builder.add_node("revalidate_node", _wrap_node(revalidate, "revalidate_node"))
     builder.add_node("execute_node", _wrap_node(execute, "execute_node"))
     builder.add_node("audit_node", _wrap_node(audit, "audit_node"))
