@@ -116,10 +116,19 @@ def audit_node(state: CerberusState) -> CerberusState:
     )
     write_audit_entry(cost_summary_entry, log_dir, run_id)
 
-    # STEP 4: Set audit_log_path in state.
+    # STEP 4: Persist COST_SUMMARY into state for the /summary endpoint (INV-AUD-02).
+    state["cost_summary"] = {
+        "resources_scanned": resources_scanned,
+        "total_waste_identified": total_waste_identified,
+        "actions_approved": actions_approved,
+        "actions_executed": actions_executed,
+        "estimated_monthly_savings_recovered": estimated_monthly_savings_recovered,
+    }
+
+    # STEP 6: Set audit_log_path in state.
     state["audit_log_path"] = log_path
 
-    # STEP 5: Attempt LangSmith trace URL retrieval.
+    # STEP 7: Attempt LangSmith trace URL retrieval.
     try:
         from langsmith import Client as LangSmithClient  # type: ignore[import]
         ls_client = LangSmithClient()
@@ -133,8 +142,8 @@ def audit_node(state: CerberusState) -> CerberusState:
         state["langsmith_trace_url"] = None
         logger.warning("LangSmith unavailable — local JSONL is the authoritative record.")
 
-    # STEP 6: Mark run complete.
+    # STEP 8: Mark run complete.
     state["run_complete"] = True
 
-    # STEP 7: Return state.
+    # STEP 9: Return state.
     return state

@@ -36,6 +36,17 @@ class ApproveRequest(BaseModel):
     approved_ids: list[str]
 
 
+class RunSummary(BaseModel):
+    run_id: str
+    resources_scanned: int
+    total_waste_identified: float | None
+    actions_approved: int
+    actions_executed: int
+    estimated_monthly_savings_recovered: float
+    audit_log_path: str | None
+    langsmith_trace_url: str | None
+
+
 # ---------------------------------------------------------------------------
 # Background task helpers
 # ---------------------------------------------------------------------------
@@ -244,3 +255,37 @@ async def get_status(run_id: str) -> JSONResponse:
             "mutation_count": final_state.get("mutation_count", 0),
         },
     )
+
+
+@app.get("/run/{run_id}/summary")
+async def get_summary(run_id: str) -> JSONResponse:
+    """Return COST_SUMMARY as JSON.
+
+    INV-SEC-02: no fields from CerberusConfig appear in the response.
+    Returns 404 if the run is not complete or the summary has not been written yet.
+    """
+    if run_id not in active_runs:
+        return JSONResponse(status_code=404, content={"error": "Run not found."})
+
+    final_state: dict = active_runs[run_id].get("final_state") or {}
+    cost_summary = final_state.get("cost_summary")
+
+    if not cost_summary:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Run not complete or summary not yet written."},
+        )
+
+    summary = RunSummary(
+        run_id=run_id,
+        resources_scanned=cost_summary.get("resources_scanned", 0),
+        total_waste_identified=cost_summary.get("total_waste_identified"),
+        actions_approved=cost_summary.get("actions_approved", 0),
+        actions_executed=cost_summary.get("actions_executed", 0),
+        estimated_monthly_savings_recovered=cost_summary.get(
+            "estimated_monthly_savings_recovered", 0.0
+        ),
+        audit_log_path=final_state.get("audit_log_path"),
+        langsmith_trace_url=final_state.get("langsmith_trace_url"),
+    )
+    return JSONResponse(status_code=200, content=summary.model_dump())

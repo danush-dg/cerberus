@@ -39,6 +39,7 @@ class CerberusState(TypedDict):
     audit_log_path: str | None
     dry_run: bool
     langsmith_trace_url: str | None
+    cost_summary: dict | None
 
 
 def validate_resource_record(record: dict) -> "ResourceRecord":
@@ -72,4 +73,5 @@ def initialise_state(project_id: str, dry_run: bool = True) -> CerberusState:
         audit_log_path=None,
         dry_run=dry_run,
         langsmith_trace_url=None,
+        cost_summary=None,
     )
