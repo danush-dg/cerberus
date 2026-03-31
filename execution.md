@@ -299,6 +299,7 @@ Engineer sign-off: _______________________ Date: _____________
 | 6 | Audit + wiring | audit_node, ChromaDB write, graph wiring, error handler | 2 | `pytest tests/test_audit.py tests/test_graph.py -v` |
 | 7 | React UI | Approval table, execute panel, API polling | 2 | `cd frontend && npm test -- --watchAll=false` |
 | 8 | Integration | End-to-end test, sandbox smoke test, demo rehearsal | 2 | `pytest tests/test_e2e.py -v` |
+| 9 | Architecture Showcase | IAM access head, guardrail narrative, ROI summary — judge-facing demo layer | 3 | `pytest tests/test_access.py -v && python scripts/run_demo_smoke_test.py` |
 
 **Git convention (PBVI):** one branch per session (`session/1-foundation`), one commit per task, PR to `main` only after session integration check passes.
 
@@ -2403,6 +2404,318 @@ python scripts/run_demo_smoke_test.py
 
 ---
 
+## Session 9 — Architecture Showcase (Safety-First Agentic Loop)
+
+**Goal:** Surface the three architectural pillars for judges as a coherent demo
+narrative: (1) IAM Access Head — natural-language onboarding with least-privilege
+role synthesis; (2) Hard-Guardrail Invariants — production protection and the
+"no owner = no delete" rule demonstrated live; (3) ROI Audit Engine — a
+machine-readable COST_SUMMARY with human-readable narrative output. Nothing in
+this session changes existing production behaviour. All guard rail invariants
+remain in force.
+
+> **Scope note — Task 9.1:** `cerberus/nodes/access_node.py` and
+> `tests/test_access.py` are not in the CLAUDE.md permitted-files list. Before
+> executing Task 9.1, update the `## 3. Scope Boundary` section of CLAUDE.md to
+> add both files, then proceed.
+
+**Integration check** (run after all 3 tasks committed):
+```bash
+pytest tests/test_access.py -v
+python scripts/run_demo_smoke_test.py
+python -c "
+from cerberus.nodes.access_node import synthesize_iam_request
+print('IAM access head import: PASS')
+"
+```
+
+---
+
+### Task 9.1 — IAM Access Head: access_node.py (The "Alice" Workflow)
+
+**Context for judges:** The dev-environment guardian already cleans up waste.
+This head shows the *other* half of the loop — how a developer requests access
+in the first place. Instead of filing a ticket and waiting for an Editor role,
+Alice types a natural-language request; Gemini synthesizes the minimum IAM
+permissions required and emits a 7-step provisioning checklist.
+
+**CC prompt:**
+```
+Create cerberus/nodes/access_node.py (scope extension — CLAUDE.md updated).
+
+Data model (Pydantic BaseModel, not stored in CerberusState — standalone):
+
+  class IamRequest(BaseModel):
+      requester_email: str
+      request_text: str          # natural language, e.g. "I need BigQuery read on fraud_transactions"
+      project_id: str
+
+  class IamProvisioningPlan(BaseModel):
+      requester_email: str
+      custom_role_id: str        # e.g. "cerberus_bq_fraud_read_20260331"
+      permissions: list[str]     # e.g. ["bigquery.tables.get", "bigquery.tables.list", ...]
+      binding_condition: str     # CEL expression — resource-level restriction if possible
+      budget_alert_threshold_usd: float
+      review_after_days: int     # always 90 — matches STALENESS_THRESHOLD_DAYS
+      checklist: list[str]       # exactly 7 steps as strings
+      reasoning: str             # ≤ 3 sentences, cite at least one permission name
+
+def synthesize_iam_request(request: IamRequest) -> IamProvisioningPlan:
+
+  1. Validate project_id with validate_project_id() — raise ValueError on mismatch.
+  2. Build a Gemini prompt:
+       System: "You are a GCP security synthesizer. Apply least-privilege.
+                Never return roles/editor, roles/owner, or roles/viewer.
+                Always return a custom role with specific permissions.
+                Return JSON only."
+       User:   f"Project: {project_id}\nRequester: {requester_email}\nRequest: {request_text}\n
+                Return a JSON object matching this schema: {IamProvisioningPlan.model_json_schema()}"
+  3. Call Gemini (gemini-1.5-pro-002, temperature=0, response_mime_type="application/json")
+     using gcp_call_with_retry wrapper.
+  4. Parse the response into IamProvisioningPlan. On parse failure, raise ValueError
+     with the raw response text in the message.
+  5. Enforce: len(plan.checklist) == 7 — pad with
+     "Step N: Human review required" if Gemini returns fewer.
+  6. Enforce: plan.review_after_days == 90 — override if Gemini returns any other value.
+  7. Return the plan.
+
+Do NOT write to JSONL, ChromaDB, or CerberusState. This node is standalone.
+Do NOT add any GCP mutation calls — this node synthesizes a plan only.
+Do NOT import from audit_node — AuditEntry is only for agent runs.
+```
+
+**Test cases** (create `tests/test_access.py`):
+```python
+def test_synthesize_returns_custom_role(mock_gemini):
+    # mock_gemini returns a valid IamProvisioningPlan JSON
+    plan = synthesize_iam_request(IamRequest(
+        requester_email="alice@example.com",
+        request_text="I need BigQuery read access for fraud_transactions",
+        project_id="nexus-tech-dev-sandbox"
+    ))
+    assert plan.custom_role_id.startswith("cerberus_")
+    assert len(plan.permissions) >= 1
+    assert all("bigquery" in p for p in plan.permissions)
+    assert plan.review_after_days == 90
+
+def test_checklist_always_seven_steps(mock_gemini_short_checklist):
+    # mock returns only 3 checklist items
+    plan = synthesize_iam_request(...)
+    assert len(plan.checklist) == 7
+
+def test_review_days_override(mock_gemini_wrong_days):
+    # mock returns review_after_days=30
+    plan = synthesize_iam_request(...)
+    assert plan.review_after_days == 90
+
+def test_invalid_project_raises(mock_gemini):
+    with pytest.raises(ValueError, match="project"):
+        synthesize_iam_request(IamRequest(
+            requester_email="alice@example.com",
+            request_text="I need BigQuery access",
+            project_id="nexus-tech-PROD-1"   # fails pattern
+        ))
+```
+
+**Verification command:**
+```bash
+pytest tests/test_access.py -v --tb=short
+```
+
+**Invariants touched:** INV-SEC-01 (project pattern check before any call),
+INV-NFR-02 (gcp_call_with_retry wraps Gemini call), INV-RSN-02 analogue
+(reasoning field enforced ≤ 3 sentences with quantitative reference).
+
+**Judge talking point:** "Alice types one sentence. Cerberus calls Gemini,
+decomposes it to the minimum GCP permissions, creates a scoped custom role —
+never a broad predefined role — and outputs a 7-step provisioning checklist
+including a 90-day review reminder that matches our staleness threshold."
+
+---
+
+### Task 9.2 — Guardrails Showcase: Live Invariant Demo Script
+
+**Context for judges:** The invariants exist throughout the codebase but are
+invisible during a happy-path demo. This task produces a single runnable script
+that demonstrates three guardrails firing in sequence against the seeded sandbox,
+with annotated console output explaining what each guardrail prevented.
+
+**CC prompt:**
+```
+Create scripts/demo_guardrails.py.
+
+This script demonstrates three hard invariants firing in sequence.
+It uses the FastAPI test client (httpx.AsyncClient) against a live uvicorn
+process pointed at the seeded sandbox. Run with: python scripts/demo_guardrails.py
+
+GUARDRAIL 1 — Production Protection (INV-SEC-01)
+  POST /run with project_id="nexus-tech-PRODUCTION-1"
+  Assert: response status 422 or run completes with error_message containing "pattern"
+  Print: "[GUARDRAIL 1 PASS] Production project blocked before any GCP call."
+
+GUARDRAIL 2 — No-Owner = No-Delete (INV-ENR-03, all 4 enforcement points)
+  POST /run with project_id="nexus-tech-dev-sandbox", dry_run=True
+  Poll GET /run/{run_id}/plan until status="awaiting_approval"
+  Find the first resource with ownership_status="no_owner"
+  Assert: its decision is "needs_review"
+  Submit it in approved_ids anyway (force it through approve_node)
+  Poll GET /run/{run_id}/status until run_complete=True
+  Find that resource's outcome in the final state
+  Assert: outcome == "SKIPPED_GUARDRAIL"
+  Print: "[GUARDRAIL 2 PASS] no_owner resource reached execute_node and was skipped."
+
+GUARDRAIL 3 — Dry-Run Firewall (INV-UI-03)
+  POST /run with dry_run=True
+  Approve all resources
+  Poll until run_complete=True
+  Assert: mutation_count == 0
+  Assert: all resource outcomes == "DRY_RUN" (not SUCCESS or FAILED)
+  Print: "[GUARDRAIL 3 PASS] Zero GCP mutations made in dry-run mode."
+
+Final output:
+  ==========================================
+  GUARDRAILS DEMO COMPLETE
+  Guardrail 1 — Production block:   PASS
+  Guardrail 2 — No-owner skip:      PASS
+  Guardrail 3 — Dry-run firewall:   PASS
+  ==========================================
+
+Exit code 0 on all PASS, 1 if any FAIL.
+```
+
+**Test cases:** Script exit code 0 = pass.
+
+**Verification command:**
+```bash
+python scripts/demo_guardrails.py
+# Expected: GUARDRAILS DEMO COMPLETE — all 3 PASS
+```
+
+**Invariants touched:** INV-SEC-01, INV-ENR-03 (all 4 enforcement points),
+INV-UI-03, INV-EXE-03.
+
+**Judge talking point:** "This is not a theoretical claim. Here is the script
+running live. Guardrail 1 blocks the wrong project before a single GCP API call
+fires. Guardrail 2 shows a mystery resource reaching execute_node and being
+skipped — the audit log records SKIPPED_GUARDRAIL, not a silent drop.
+Guardrail 3 proves zero mutations occurred in dry-run."
+
+---
+
+### Task 9.3 — ROI Summary: Human-Readable Cost Narrative
+
+**Context for judges:** The COST_SUMMARY JSONL entry already exists (Task 6.1).
+This task adds a `scripts/print_run_summary.py` helper that reads the most
+recent audit log and prints a judge-facing ROI narrative in plain English,
+and adds an `/run/{run_id}/summary` FastAPI endpoint that returns the same
+data as JSON (no credentials — INV-SEC-02 compliant).
+
+> **Scope note:** `GET /run/{run_id}/summary` is an addition to the four
+> permitted FastAPI endpoints in CLAUDE.md section 4. Update that list before
+> executing this task.
+
+**CC prompt:**
+```
+PART A — scripts/print_run_summary.py
+
+Reads the most recent audit_{run_id}.jsonl file from AUDIT_LOG_DIR.
+Locates the COST_SUMMARY line (action_type=="COST_SUMMARY").
+Prints:
+
+  ══════════════════════════════════════════════
+  CERBERUS RUN SUMMARY  run_id={run_id}
+  ══════════════════════════════════════════════
+  Resources scanned:          {resources_scanned}
+  Total waste identified:     ${total_waste_identified:.2f}/mo
+  Actions approved:           {actions_approved}
+  Actions executed:           {actions_executed}
+  Recovered savings:          ${estimated_monthly_savings_recovered:.2f}/mo
+  ──────────────────────────────────────────────
+  Evidence-based decisions:   {actions_approved} resources classified by
+                              Gemini 1.5 Pro at temperature=0.
+  Audit log:                  {audit_log_path}
+  LangSmith trace:            {langsmith_trace_url or "unavailable — local JSONL is authoritative"}
+  ══════════════════════════════════════════════
+
+If COST_SUMMARY line is missing: print "No COST_SUMMARY found in log." and exit 1.
+If AUDIT_LOG_DIR has no files: print "No audit logs found." and exit 1.
+
+PART B — GET /run/{run_id}/summary endpoint in cerberus/api.py
+
+Response model (Pydantic BaseModel — no credential fields, INV-SEC-02):
+
+  class RunSummary(BaseModel):
+      run_id: str
+      resources_scanned: int
+      total_waste_identified: float | None
+      actions_approved: int
+      actions_executed: int
+      estimated_monthly_savings_recovered: float
+      audit_log_path: str | None
+      langsmith_trace_url: str | None
+
+Implementation:
+  - Read state from the in-memory run registry (same dict used by /status).
+  - Extract the COST_SUMMARY fields from state["cost_summary"] if present,
+    else return 404 with detail="Run not complete or summary not yet written."
+  - Return RunSummary. No fields from CerberusConfig may appear in the response.
+
+Add state["cost_summary"] dict population in audit_node.py (Task 6.1 follow-on):
+  After writing the COST_SUMMARY JSONL entry, set:
+    state["cost_summary"] = {
+        "resources_scanned": ...,
+        "total_waste_identified": ...,
+        "actions_approved": ...,
+        "actions_executed": ...,
+        "estimated_monthly_savings_recovered": ...
+    }
+  This is the only state key audit_node adds beyond what Task 6.1 already sets.
+```
+
+**Test cases:**
+```python
+def test_summary_endpoint_returns_no_credentials(client, completed_run_id):
+    r = client.get(f"/run/{completed_run_id}/summary")
+    assert r.status_code == 200
+    body = r.json()
+    assert "service_account" not in body
+    assert "key_path" not in body
+    assert "billing_account" not in body
+    assert "estimated_monthly_savings_recovered" in body
+
+def test_summary_404_before_complete(client, pending_run_id):
+    r = client.get(f"/run/{pending_run_id}/summary")
+    assert r.status_code == 404
+
+def test_print_run_summary_exits_0(tmp_path, sample_audit_log_with_cost_summary):
+    result = subprocess.run(
+        ["python", "scripts/print_run_summary.py"],
+        env={**os.environ, "AUDIT_LOG_DIR": str(tmp_path)},
+        capture_output=True
+    )
+    assert result.returncode == 0
+    assert b"Recovered savings" in result.stdout
+```
+
+**Verification command:**
+```bash
+# After a smoke-test run:
+python scripts/print_run_summary.py
+# Expected: formatted ROI table with non-zero recovered savings
+```
+
+**Invariants touched:** INV-AUD-02 (COST_SUMMARY correctness), INV-SEC-02
+(no credentials in summary endpoint), INV-NFR-03 (error_node catches any
+summary write failure).
+
+**Judge talking point:** "Every run produces a machine-readable JSONL and a
+human-readable ROI table. The recovered savings figure only counts resources
+where the GCP state-change was verified — not just approved. If the stop call
+succeeded but the verification read failed, that resource is FAILED, not SUCCESS,
+and is excluded from the savings total."
+
+---
+
 ## Invariant Coverage Matrix
 
 | Invariant | Sessions | Tasks |
@@ -2424,11 +2737,11 @@ python scripts/run_demo_smoke_test.py
 | INV-EXE-02 | 5 | 5.3 |
 | INV-EXE-03 | 5 | 5.3 |
 | INV-AUD-01 | 6 | 6.1 |
-| INV-AUD-02 | 6 | 6.1 |
-| INV-SEC-01 | 1, 2, 6 | 1.2, 2.4, 6.2 |
-| INV-SEC-02 | 5, 6 | 5.1, 6.1 |
+| INV-AUD-02 | 6, 9 | 6.1, 9.3 (cost_summary state key + /summary endpoint) |
+| INV-SEC-01 | 1, 2, 6, 9 | 1.2, 2.4, 6.2, 9.1 (access_node), 9.2 (guardrail demo) |
+| INV-SEC-02 | 5, 6, 9 | 5.1, 6.1, 9.3 (RunSummary model has no credential fields) |
 | INV-NFR-01 | 2 | 2.4 |
-| INV-NFR-02 | 1 | 1.4 |
+| INV-NFR-02 | 1, 9 | 1.4, 9.1 (Gemini call in access_node wrapped in gcp_call_with_retry) |
 | INV-NFR-03 | 6 | 6.2 |
 
 ---
@@ -2447,5 +2760,9 @@ python scripts/run_demo_smoke_test.py
 | LangSmith failure visible in UI | Task 7.2: fallback message when URL is null |
 | Dry-run modal requires affirmative click | Task 7.2: test confirms onExecute not called until "Execute live" |
 | ChromaDB cross-run resource context | Task 1.4b, 4.1 (build_resource_prompt), 6.1 (audit write) |
+| IAM over-provisioning (broad predefined roles) | Task 9.1: access_node enforces custom roles; broad roles rejected at parse |
+| no_owner guardrail invisible during happy-path demo | Task 9.2: demo_guardrails.py makes all 4 enforcement points observable |
+| Recovered savings inflated by FAILED actions | Task 9.3: COST_SUMMARY sums only outcome=="SUCCESS"; FAILED excluded by design |
+| No judge-facing ROI printout | Task 9.3: print_run_summary.py + GET /run/{run_id}/summary endpoint |
 | Concurrent session conflict | Task 5.1: 409 response in POST /run |
 | evidence field not validated against scan data | **Not closed** — flagged as prompt evaluation item (Day 4 task) |

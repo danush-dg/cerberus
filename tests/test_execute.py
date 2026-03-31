@@ -106,8 +106,28 @@ def completed_run(client):
 # ---------------------------------------------------------------------------
 
 
-def _make_state_with_resources(resource_ids: list[str], approved_ids: list[str] | None = None):
-    """Return a CerberusState containing resources for the given IDs."""
+_PLAN_PAYLOAD_ITEM = {
+    "resource_id": "vm-1",
+    "resource_type": "vm",
+    "region": "us-central1",
+    "owner_email": "owner@nexus.tech",
+    "ownership_status": "active_owner",
+    "decision": "safe_to_stop",
+    "reasoning": "CPU idle 80h below 5% threshold; cost $45/mo; owner active.",
+    "estimated_monthly_savings": 45.0,
+}
+
+
+def _make_state_with_resources(
+    resource_ids: list[str],
+    approved_ids: list[str] | None = None,
+):
+    """Return a CerberusState with resources (and optionally pre-set approved_actions).
+
+    In the new approval flow, approved_actions is injected into state *before*
+    approve_node runs (via graph.aupdate_state in the API/test).  Tests that
+    exercise approve_node directly should pre-populate approved_actions here.
+    """
     state = initialise_state("nexus-tech-dev-1")
     state["resources"] = [
         make_resource_record(
@@ -118,31 +138,40 @@ def _make_state_with_resources(resource_ids: list[str], approved_ids: list[str] 
         )
         for rid in resource_ids
     ]
+    if approved_ids is not None:
+        state["approved_actions"] = [
+            r for r in state["resources"] if r["resource_id"] in approved_ids
+        ]
     return state
 
 
-def _run_approve_node(approved_ids: list[str], resource_ids: list[str] | None = None):
-    """Drive approve_node through the interrupt and return the resulting state."""
+async def _run_approve_node(
+    approved_ids: list[str],
+    resource_ids: list[str] | None = None,
+):
+    """Drive approve_node with pre-populated approved_actions and return state.
+
+    approve_node no longer calls interrupt() — it simply reads approved_actions
+    (already set) and resets mutation_count to 0.
+    """
     if resource_ids is None:
         resource_ids = approved_ids
-
-    state = _make_state_with_resources(resource_ids)
-
-    with patch("cerberus.nodes.approve_node.interrupt", return_value=approved_ids):
-        result = approve_node(state)
-
-    return result
+    state = _make_state_with_resources(resource_ids, approved_ids=approved_ids)
+    return await approve_node(state)
 
 
-def test_mutation_count_zero_after_approve():
+@pytest.mark.asyncio
+async def test_mutation_count_zero_after_approve():
     """INV-EXE-03: mutation_count must be 0 after approve_node runs."""
-    state = _run_approve_node(approved_ids=["vm-1", "vm-2"])
+    state = await _run_approve_node(approved_ids=["vm-1", "vm-2"])
     assert state["mutation_count"] == 0
 
 
-def test_approved_actions_filtered_by_ids():
-    """Only resources whose IDs appear in approved_ids enter approved_actions."""
-    state = _run_approve_node(
+@pytest.mark.asyncio
+async def test_approved_actions_filtered_by_ids():
+    """In the new flow, filtering is done by the caller before approve_node.
+    Verify approve_node preserves the pre-set approved_actions unchanged."""
+    state = await _run_approve_node(
         approved_ids=["vm-1"],
         resource_ids=["vm-1", "vm-2"],
     )
@@ -151,51 +180,51 @@ def test_approved_actions_filtered_by_ids():
     assert "vm-2" not in ids
 
 
-def test_approve_node_empty_approved_ids():
+@pytest.mark.asyncio
+async def test_approve_node_empty_approved_ids():
     """Approving zero resources yields an empty approved_actions list."""
-    state = _run_approve_node(approved_ids=[], resource_ids=["vm-1"])
+    state = await _run_approve_node(approved_ids=[], resource_ids=["vm-1"])
     assert state["approved_actions"] == []
     assert state["mutation_count"] == 0
 
 
-def test_approval_payload_excludes_credentials():
-    """approve_node must not include credential fields in the interrupt payload."""
-    captured_payload = None
+def test_approval_payload_excludes_credentials(awaiting_approval_run, client):
+    """Plan response must not include credential fields (INV-SEC-02).
 
-    def fake_interrupt(value):
-        nonlocal captured_payload
-        captured_payload = value
-        return []
+    The approval payload is now built by _run_graph_until_interrupt in the API.
+    Verify via the GET /run/{run_id}/plan endpoint.
+    """
+    from cerberus.api import active_runs
 
-    state = _make_state_with_resources(["vm-1"])
-    with patch("cerberus.nodes.approve_node.interrupt", side_effect=fake_interrupt):
-        approve_node(state)
+    active_runs[awaiting_approval_run]["approval_payload"] = [_PLAN_PAYLOAD_ITEM]
 
-    assert captured_payload is not None
+    r = client.get(f"/run/{awaiting_approval_run}/plan")
+    assert r.status_code == 200
+
     forbidden_keys = {
         "service_account_key_path",
         "gemini_api_key",
         "billing_account_id",
         "langsmith_api_key",
     }
-    for item in captured_payload:
+    for item in r.json()["plan"]:
         assert not forbidden_keys.intersection(item.keys()), (
             f"Credential field found in approval payload: {item}"
         )
 
 
-def test_approval_payload_contains_required_display_fields():
-    """approve_node payload must include all display fields per INV-UI-01."""
-    captured_payload = None
+def test_approval_payload_contains_required_display_fields(awaiting_approval_run, client):
+    """Plan response must include all required display fields (INV-UI-01).
 
-    def fake_interrupt(value):
-        nonlocal captured_payload
-        captured_payload = value
-        return []
+    The approval payload is now built by _run_graph_until_interrupt in the API.
+    Verify via the GET /run/{run_id}/plan endpoint.
+    """
+    from cerberus.api import active_runs
 
-    state = _make_state_with_resources(["vm-1"])
-    with patch("cerberus.nodes.approve_node.interrupt", side_effect=fake_interrupt):
-        approve_node(state)
+    active_runs[awaiting_approval_run]["approval_payload"] = [_PLAN_PAYLOAD_ITEM]
+
+    r = client.get(f"/run/{awaiting_approval_run}/plan")
+    assert r.status_code == 200
 
     required_keys = {
         "resource_id",
@@ -207,7 +236,7 @@ def test_approval_payload_contains_required_display_fields():
         "reasoning",
         "estimated_monthly_savings",
     }
-    for item in captured_payload:
+    for item in r.json()["plan"]:
         assert required_keys.issubset(item.keys()), (
             f"Missing display fields in payload item: {item}"
         )

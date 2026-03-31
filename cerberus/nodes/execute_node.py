@@ -290,8 +290,15 @@ async def execute_node(state: CerberusState) -> CerberusState:
     # PRECONDITION 1 — dry-run: mark all approved actions and return immediately.
     if state["dry_run"]:
         logger.info("DRY RUN — no GCP calls made.")
+        approved_ids: set[str] = set()
         for resource in state["approved_actions"]:
             resource["outcome"] = "DRY_RUN"
+            approved_ids.add(resource["resource_id"])
+        # Sync outcomes back to state["resources"].  When approved_actions are
+        # injected via aupdate_state they are deep copies, not the same objects.
+        for resource in state["resources"]:
+            if resource["resource_id"] in approved_ids:
+                resource["outcome"] = "DRY_RUN"
         return state
 
     # PRECONDITION 2 — nothing to do.
@@ -347,5 +354,16 @@ async def execute_node(state: CerberusState) -> CerberusState:
         else:
             resource["outcome"] = "FAILED"
             state["mutation_count"] -= 1
+
+    # Sync all outcomes from approved_actions back to state["resources"]
+    # (deep-copy safety — see dry_run path comment above).
+    outcome_map = {
+        r["resource_id"]: r.get("outcome")
+        for r in state["approved_actions"]
+        if r.get("outcome") is not None
+    }
+    for resource in state["resources"]:
+        if resource["resource_id"] in outcome_map:
+            resource["outcome"] = outcome_map[resource["resource_id"]]
 
     return state

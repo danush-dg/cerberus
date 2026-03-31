@@ -44,7 +44,12 @@ class ApproveRequest(BaseModel):
 async def _run_graph_until_interrupt(
     run_id: str, state: CerberusState, thread_id: str
 ) -> None:
-    """Stream the graph from the start until an interrupt (approval gate) or completion."""
+    """Stream the graph from the start until the approval gate or completion.
+
+    The approval gate uses interrupt_before=["approve_node"] (compile-time).
+    When paused, graph_state.next contains "approve_node" and the plan is
+    read directly from graph_state.values["resources"].
+    """
     config = {"configurable": {"thread_id": thread_id}}
     try:
         async for _event in cerberus_graph.astream_events(
@@ -52,21 +57,27 @@ async def _run_graph_until_interrupt(
         ):
             pass
 
-        # Check whether the graph paused at an interrupt or finished.
         graph_state = await cerberus_graph.aget_state(config)
 
-        # Collect all interrupt values from pending tasks.
-        all_interrupts = []
-        for task in graph_state.tasks:
-            all_interrupts.extend(getattr(task, "interrupts", []))
-
-        if all_interrupts:
-            # Graph suspended at approve_node — surface the approval payload.
-            active_runs[run_id]["approval_payload"] = all_interrupts[0].value
+        if graph_state.next and "approve_node" in graph_state.next:
+            # Graph paused before approve_node — surface resources as plan.
+            resources = graph_state.values.get("resources", [])
+            active_runs[run_id]["approval_payload"] = [
+                {
+                    "resource_id": r["resource_id"],
+                    "resource_type": r["resource_type"],
+                    "region": r["region"],
+                    "owner_email": r["owner_email"],
+                    "ownership_status": r["ownership_status"],
+                    "decision": r["decision"],
+                    "reasoning": r["reasoning"],
+                    "estimated_monthly_savings": r["estimated_monthly_savings"],
+                }
+                for r in resources
+            ]
             active_runs[run_id]["status"] = "awaiting_approval"
             logger.info("run %s reached approval gate", run_id)
         else:
-            # Graph completed without hitting an interrupt.
             active_runs[run_id]["final_state"] = dict(graph_state.values)
             active_runs[run_id]["status"] = "complete"
             logger.info("run %s completed without interrupt", run_id)
@@ -79,13 +90,30 @@ async def _run_graph_until_interrupt(
 async def _resume_graph(
     run_id: str, approved_ids: list[str], thread_id: str
 ) -> None:
-    """Resume the graph after human approval."""
-    from langgraph.types import Command
+    """Resume the graph after human approval.
 
+    Injects approved_actions into the graph state via aupdate_state (Python 3.10
+    compatible — avoids langgraph.types.interrupt() which requires Python 3.11+
+    in async contexts), then resumes by streaming None.
+    """
     config = {"configurable": {"thread_id": thread_id}}
     try:
+        # Read current resources to build approved_actions list.
+        graph_state = await cerberus_graph.aget_state(config)
+        resources = graph_state.values.get("resources", [])
+        approved_resources = [
+            r for r in resources if r["resource_id"] in approved_ids
+        ]
+
+        # Inject approved state before approve_node runs.
+        await cerberus_graph.aupdate_state(
+            config,
+            {"approved_actions": approved_resources, "mutation_count": 0},
+        )
+
+        # Resume from the interrupted point (approve_node).
         async for _event in cerberus_graph.astream_events(
-            Command(resume=approved_ids), config=config, version="v2"
+            None, config=config, version="v2"
         ):
             pass
 

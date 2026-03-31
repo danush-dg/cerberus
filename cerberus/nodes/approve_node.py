@@ -2,49 +2,28 @@ from __future__ import annotations
 
 import logging
 
-from langgraph.types import interrupt
-
 from cerberus.state import CerberusState
 
 logger = logging.getLogger(__name__)
 
 
-def approve_node(state: CerberusState) -> CerberusState:
-    """Pause for human approval using LangGraph interrupt.
+async def approve_node(state: CerberusState) -> CerberusState:
+    """Accept the human-approved resource list.
 
-    Builds a display-only payload (no credentials), suspends the graph,
-    and resumes with the list of approved resource IDs.
+    On Python < 3.11, langgraph.types.interrupt() cannot access its runnable
+    context in async nodes.  The approval gate is therefore implemented via
+    interrupt_before=["approve_node"] at compile time: the graph pauses *before*
+    this node runs.  The caller (API or test) then injects approved_actions and
+    mutation_count=0 via graph.aupdate_state() before resuming with astream(None).
+
+    By the time this node executes, state["approved_actions"] is already set.
     """
-    approval_payload = [
-        {
-            "resource_id": r["resource_id"],
-            "resource_type": r["resource_type"],
-            "region": r["region"],
-            "owner_email": r["owner_email"],
-            "ownership_status": r["ownership_status"],
-            "decision": r["decision"],
-            "reasoning": r["reasoning"],
-            "estimated_monthly_savings": r["estimated_monthly_savings"],
-        }
-        for r in state["resources"]
-    ]
-
-    logger.info(
-        "approve_node: suspending for human approval — %d resource(s) in payload",
-        len(approval_payload),
-    )
-
-    approved_ids: list[str] = interrupt(approval_payload)
-
-    state["approved_actions"] = [
-        r for r in state["resources"] if r["resource_id"] in approved_ids
-    ]
-    state["mutation_count"] = 0  # INV-EXE-03: session counter reset here
-
     logger.info(
         "approve_node: %d resource(s) approved out of %d",
-        len(state["approved_actions"]),
+        len(state.get("approved_actions") or []),
         len(state["resources"]),
     )
-
+    # mutation_count must be 0 at the start of execute_node (INV-EXE-03).
+    # Callers set it via aupdate_state; guard here in case they forget.
+    state["mutation_count"] = 0
     return state

@@ -7,6 +7,7 @@ export interface ResourceRow {
   decision: string | null
   reasoning: string | null
   estimated_monthly_savings: number | null
+  outcome: string | null
 }
 
 export type RevalidationStatus = 'idle' | 'running' | 'complete' | 'drift_detected'
