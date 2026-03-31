@@ -209,6 +209,7 @@ tests/test_access.py
 tests/fixtures/sample_resources.json
 frontend/src/components/ApprovalTable.tsx
 frontend/src/components/ExecutePanel.tsx
+frontend/src/components/IamPanel.tsx
 frontend/src/App.tsx
 frontend/src/types.ts
 frontend/src/api.ts
@@ -217,6 +218,8 @@ frontend/tsconfig.json
 scripts/seed_sandbox.py
 scripts/verify_seed.py
 scripts/run_demo_smoke_test.py
+scripts/demo_guardrails.py
+scripts/print_run_summary.py
 pyproject.toml
 .env.example
 .gitignore
@@ -406,6 +409,8 @@ POST /run                    start a new agent run
 GET  /run/{run_id}/plan      return current approval payload (poll until available)
 POST /run/{run_id}/approve   resume graph with approved_ids
 GET  /run/{run_id}/status    return run state (no credentials)
+GET  /run/{run_id}/summary   return COST_SUMMARY as JSON (no credentials, Task 9.3)
+POST /iam/synthesize         synthesize least-privilege IAM plan from natural language (Task 9.1 UI)
 ```
 
 ### Ownership lookup priority (exact order — do not reorder)

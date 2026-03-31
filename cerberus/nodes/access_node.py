@@ -49,13 +49,11 @@ class IamProvisioningPlan(BaseModel):
 
 
 def _build_prompt(request: IamRequest) -> str:
-    schema = IamProvisioningPlan.model_json_schema()
     today = date.today().strftime("%Y%m%d")
     return (
         f"Project: {request.project_id}\n"
         f"Requester: {request.requester_email}\n"
         f"Request: {request.request_text}\n\n"
-        f"Return a JSON object matching this schema: {json.dumps(schema)}\n\n"
         f"Rules:\n"
         f"- custom_role_id must start with 'cerberus_' and end with today's date "
         f"({today}), e.g. cerberus_bq_fraud_read_{today}\n"
@@ -67,6 +65,7 @@ def _build_prompt(request: IamRequest) -> str:
         f"- checklist must contain exactly 7 steps as strings\n"
         f"- reasoning must be 3 sentences or fewer and cite at least one "
         f"permission name\n"
+        f"- requester_email field must be: {request.requester_email}\n"
     )
 
 
@@ -78,6 +77,7 @@ def _call_gemini(client: genai.Client, model_name: str, prompt: str) -> str:
             system_instruction=_SYSTEM_PROMPT,
             temperature=0,
             response_mime_type="application/json",
+            response_schema=IamProvisioningPlan,
         ),
     )
     return response.text

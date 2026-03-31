@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI
 from fastapi.responses import JSONResponse
@@ -20,6 +21,11 @@ app = FastAPI(title="Cerberus")
 # Each entry: {"thread_id", "project_id", "status", "approval_payload", "final_state", "error_message"}
 # status values: "scanning" | "awaiting_approval" | "executing" | "complete" | "error"
 active_runs: dict[str, dict] = {}
+
+# In-memory IAM ticket store keyed by ticket_id.
+# Each entry: {"id", "ts", "plan", "status"}
+# status values: "pending" | "approved" | "rejected"
+iam_tickets: dict[str, dict] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -324,3 +330,48 @@ async def post_iam_synthesize(req: IamSynthesizeRequest) -> JSONResponse:
     except Exception as exc:
         logger.exception("IAM synthesis failed")
         return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+# ---------------------------------------------------------------------------
+# IAM Ticket endpoints (Cerberus Admin ticket queue)
+# ---------------------------------------------------------------------------
+
+
+class IamTicketCreate(BaseModel):
+    plan: dict
+
+
+class IamTicketReview(BaseModel):
+    action: str  # "approved" | "rejected"
+
+
+@app.post("/iam/tickets")
+async def post_iam_ticket(req: IamTicketCreate) -> JSONResponse:
+    """Create a new IAM ticket from a synthesized plan submitted for admin approval."""
+    ticket_id = str(uuid.uuid4())
+    iam_tickets[ticket_id] = {
+        "id": ticket_id,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "plan": req.plan,
+        "status": "pending",
+    }
+    logger.info("IAM ticket %s created for requester %s", ticket_id, req.plan.get("requester_email"))
+    return JSONResponse(status_code=200, content={"id": ticket_id})
+
+
+@app.get("/iam/tickets")
+async def get_iam_tickets() -> JSONResponse:
+    """List all IAM tickets (pending, approved, rejected)."""
+    return JSONResponse(status_code=200, content=list(iam_tickets.values()))
+
+
+@app.post("/iam/tickets/{ticket_id}/review")
+async def post_iam_ticket_review(ticket_id: str, req: IamTicketReview) -> JSONResponse:
+    """Approve or reject an IAM ticket."""
+    if ticket_id not in iam_tickets:
+        return JSONResponse(status_code=404, content={"error": "Ticket not found."})
+    if req.action not in ("approved", "rejected"):
+        return JSONResponse(status_code=400, content={"error": "action must be 'approved' or 'rejected'"})
+    iam_tickets[ticket_id]["status"] = req.action
+    logger.info("IAM ticket %s %s", ticket_id, req.action)
+    return JSONResponse(status_code=200, content={"status": req.action})
