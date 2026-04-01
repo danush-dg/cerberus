@@ -1,5 +1,8 @@
 .env
 cerberus-key.json
+key.json
+frontend/node_modules/
+gcloud
 __pycache__/
 .pytest_cache/
 chroma_db/
