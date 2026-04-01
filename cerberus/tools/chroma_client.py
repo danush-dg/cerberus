@@ -15,9 +15,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 COLLECTION_NAME = "resource_history"
+IAM_COLLECTION_NAME = "iam_history"
 
 _client: chromadb.PersistentClient | None = None
 _collection: chromadb.Collection | None = None
+_iam_collection: chromadb.Collection | None = None
 
 
 class _LocalEmbedding(EmbeddingFunction):
@@ -41,18 +43,31 @@ class _LocalEmbedding(EmbeddingFunction):
         return result
 
 
-def get_chroma_collection() -> chromadb.Collection:
-    global _client, _collection
-    if _collection is not None:
+def get_chroma_collection(collection_name: str = COLLECTION_NAME) -> chromadb.Collection:
+    global _client, _collection, _iam_collection
+    
+    if collection_name == COLLECTION_NAME and _collection is not None:
         return _collection
+    if collection_name == IAM_COLLECTION_NAME and _iam_collection is not None:
+        return _iam_collection
+
     persist_dir = os.environ.get("CHROMA_PERSIST_DIR", "./chroma_db")
     os.makedirs(persist_dir, exist_ok=True)
-    _client = chromadb.PersistentClient(path=persist_dir)
-    _collection = _client.get_or_create_collection(
-        COLLECTION_NAME,
+    
+    if _client is None:
+        _client = chromadb.PersistentClient(path=persist_dir)
+        
+    collection = _client.get_or_create_collection(
+        collection_name,
         embedding_function=_LocalEmbedding(),
     )
-    return _collection
+    
+    if collection_name == COLLECTION_NAME:
+        _collection = collection
+    else:
+        _iam_collection = collection
+        
+    return collection
 
 
 def upsert_resource_record(record: dict, run_id: str, project_id: str) -> None:
@@ -96,6 +111,26 @@ def query_resource_history(resource_id: str) -> dict | None:
         return None
 
 
+def query_project_history(project_id: str) -> list[dict]:
+    """Return all resource records stored for *project_id* in ChromaDB."""
+    try:
+        collection = get_chroma_collection()
+        result = collection.get(where={"project_id": {"$eq": project_id}})
+        if result and result["metadatas"]:
+            ids = result.get("ids") or []
+            return [
+                {**meta, "resource_id": doc_id}
+                for meta, doc_id in zip(result["metadatas"], ids)
+            ]
+        return []
+    except Exception as e:
+        logger.warning(
+            "ChromaDB query_project_history failed for project=%s: %s",
+            project_id, e,
+        )
+        return []
+
+
 def query_owner_history(owner_email: str, project_id: str) -> list[dict]:
     try:
         collection = get_chroma_collection()
@@ -103,11 +138,56 @@ def query_owner_history(owner_email: str, project_id: str) -> list[dict]:
             where={"$and": [{"owner_email": {"$eq": owner_email}}, {"project_id": {"$eq": project_id}}]}
         )
         if result and result["metadatas"]:
-            return result["metadatas"]
+            ids = result.get("ids") or []
+            return [
+                {**meta, "resource_id": doc_id}
+                for meta, doc_id in zip(result["metadatas"], ids)
+            ]
         return []
     except Exception as e:
         logger.warning(
             "ChromaDB query_owner_history failed for owner=%s project=%s: %s",
             owner_email, project_id, e,
         )
+        return []
+def upsert_iam_ticket(ticket_data: dict) -> None:
+    """Store an approved IAM ticket in ChromaDB."""
+    try:
+        collection = get_chroma_collection(IAM_COLLECTION_NAME)
+        ticket_id = ticket_data["ticket_id"]
+        
+        document = (
+            f"IAM Ticket {ticket_id} for {ticket_data['requester_email']} "
+            f"role {ticket_data['role']} in {ticket_data['project_id']}"
+        )
+        
+        metadata = {
+            "ticket_id": ticket_id,
+            "requester_email": ticket_data["requester_email"],
+            "project_id": ticket_data["project_id"],
+            "role": ticket_data["role"],
+            "status": ticket_data["status"],
+            "created_at": ticket_data["created_at"],
+            "justification": ticket_data.get("justification", ""),
+        }
+        
+        collection.upsert(
+            documents=[document],
+            metadatas=[metadata],
+            ids=[ticket_id],
+        )
+    except Exception as e:
+        logger.warning("ChromaDB upsert_iam_ticket failed: %s", e)
+
+
+def query_iam_history(project_id: str) -> list[dict]:
+    """Return all IAM tickets stored for *project_id* in ChromaDB."""
+    try:
+        collection = get_chroma_collection(IAM_COLLECTION_NAME)
+        result = collection.get(where={"project_id": {"$eq": project_id}})
+        if result and result["metadatas"]:
+            return result["metadatas"]
+        return []
+    except Exception as e:
+        logger.warning("ChromaDB query_iam_history failed for project=%s: %s", project_id, e)
         return []

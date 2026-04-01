@@ -23,6 +23,7 @@ class IamRequestBody(BaseModel):
     natural_language_request: str
     requester_email: str
     project_id: str
+    role: str  # user-selected GCP predefined role name
 
 
 @router.post("/iam/request")
@@ -43,6 +44,7 @@ async def post_iam_request(body: IamRequestBody) -> JSONResponse:
             natural_language_request=body.natural_language_request,
             requester_email=body.requester_email,
             project_id=body.project_id,
+            role=body.role,
         )
         plan = await synthesize_iam_request(request, config)
         ticket = await create_ticket(plan)

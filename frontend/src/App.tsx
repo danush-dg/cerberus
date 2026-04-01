@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { ApprovalTable } from './components/ApprovalTable'
 import { ExecutePanel } from './components/ExecutePanel'
 import { IamPanel } from './components/IamPanel'
+import { CostCenter } from './components/CostCenter'
+import { SecurityHub } from './components/SecurityHub'
 import type { ResourceRow, RevalidationStatus, NavSection, IamTicket, SecurityAlert, IamPlan } from './types'
 import { MOCK_IDENTITY_DATA } from './types'
 import {
@@ -11,8 +13,10 @@ import {
   getStatus,
   getTickets,
   reviewTicket,
+  provisionTicket,
   type ResourceRecord,
   type IamTicketResponse,
+  type ProvisionResult,
 } from './api'
 
 // ---------------------------------------------------------------------------
@@ -470,8 +474,12 @@ function SecurityHubView({ resources }: { resources: ResourceRow[] }) {
 // ---------------------------------------------------------------------------
 
 function TicketsView({ tickets, onRefresh }: { tickets: IamTicket[]; onRefresh: () => void }) {
-  const [reviewing, setReviewing] = useState<string | null>(null)
-  const [error, setError]         = useState<string | null>(null)
+  const [reviewing, setReviewing]           = useState<string | null>(null)
+  const [error, setError]                   = useState<string | null>(null)
+  // provision state
+  const [confirmId, setConfirmId]           = useState<string | null>(null)
+  const [provisioning, setProvisioning]     = useState<string | null>(null)
+  const [provisionOutcome, setProvisionOutcome] = useState<{ id: string; result: ProvisionResult } | null>(null)
 
   async function handleReview(id: string, action: 'approved' | 'rejected') {
     setReviewing(id); setError(null)
@@ -485,12 +493,55 @@ function TicketsView({ tickets, onRefresh }: { tickets: IamTicket[]; onRefresh: 
     }
   }
 
+  async function handleProvisionLive() {
+    if (!confirmId) return
+    const id = confirmId
+    setConfirmId(null)
+    setProvisioning(id); setError(null); setProvisionOutcome(null)
+    try {
+      const result = await provisionTicket(id, false)
+      setProvisionOutcome({ id, result })
+      await onRefresh()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setProvisioning(null)
+    }
+  }
+
   const pending  = tickets.filter(t => t.status === 'pending').length
   const approved = tickets.filter(t => t.status === 'approved').length
   const rejected = tickets.filter(t => t.status === 'rejected').length
 
   return (
     <div>
+      {/* Confirmation modal — live GCP mutation */}
+      {confirmId && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.45)', zIndex: 1000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          <div style={{ background: '#fff', borderRadius: 10, padding: '28px 32px', maxWidth: 440, width: '90%', boxShadow: '0 8px 32px rgba(0,0,0,0.18)' }}>
+            <h2 style={{ margin: '0 0 8px', fontSize: 18, color: '#b71c1c' }}>⚠ Live GCP Mutation</h2>
+            <p style={{ margin: '0 0 20px', fontSize: 13, color: '#555' }}>
+              This will call <code>setIamPolicy</code> on GCP and bind the role immediately.
+              This action cannot be undone from this UI.
+            </p>
+            <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setConfirmId(null)}
+                style={{ background: '#6c757d', color: '#fff', border: 'none', borderRadius: 6, padding: '9px 20px', fontWeight: 600, cursor: 'pointer' }}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleProvisionLive}
+                style={{ background: '#c62828', color: '#fff', border: 'none', borderRadius: 6, padding: '9px 20px', fontWeight: 600, cursor: 'pointer' }}
+              >
+                Provision in GCP →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
         <h1 style={{ margin: 0, fontSize: 24, fontWeight: 700 }}>IAM Ticket Queue</h1>
         <button onClick={onRefresh} style={{ ...secondaryBtn, fontSize: 13, padding: '6px 14px' }}>↻ Refresh</button>
@@ -541,7 +592,7 @@ function TicketsView({ tickets, onRefresh }: { tickets: IamTicket[]; onRefresh: 
                       disabled={reviewing === t.id}
                       style={{ ...primaryBtn, padding: '7px 16px', fontSize: 13, opacity: reviewing === t.id ? 0.6 : 1 }}
                     >
-                      Approve
+                      {reviewing === t.id ? 'Saving…' : 'Approve'}
                     </button>
                     <button
                       onClick={() => handleReview(t.id, 'rejected')}
@@ -552,6 +603,15 @@ function TicketsView({ tickets, onRefresh }: { tickets: IamTicket[]; onRefresh: 
                     </button>
                   </div>
                 )}
+                {t.status === 'approved' && (
+                  <button
+                    onClick={() => setConfirmId(t.id)}
+                    disabled={provisioning === t.id}
+                    style={{ background: '#2e7d32', color: '#fff', border: 'none', borderRadius: 6, padding: '7px 16px', fontSize: 13, fontWeight: 600, cursor: provisioning === t.id ? 'not-allowed' : 'pointer', opacity: provisioning === t.id ? 0.6 : 1 }}
+                  >
+                    {provisioning === t.id ? 'Provisioning…' : '⚡ Provision in GCP'}
+                  </button>
+                )}
               </div>
 
               {/* Plan summary */}
@@ -561,12 +621,12 @@ function TicketsView({ tickets, onRefresh }: { tickets: IamTicket[]; onRefresh: 
                   <div style={{ fontFamily: 'monospace', fontSize: 12 }}>{t.plan.requester_email}</div>
                 </div>
                 <div>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: '#9e9e9e', marginBottom: 3 }}>CUSTOM ROLE</div>
-                  <div style={{ fontFamily: 'monospace', fontSize: 12, color: '#7b1fa2' }}>{t.plan.custom_role_id}</div>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: '#9e9e9e', marginBottom: 3 }}>ROLE</div>
+                  <div style={{ fontFamily: 'monospace', fontSize: 12, color: '#7b1fa2' }}>{t.plan.role ?? t.plan.custom_role_id ?? '—'}</div>
                 </div>
                 <div>
                   <div style={{ fontSize: 11, fontWeight: 700, color: '#9e9e9e', marginBottom: 3 }}>REVIEW AFTER</div>
-                  <div>{t.plan.review_after_days} days</div>
+                  <div>{t.plan.review_after_days ?? 90} days</div>
                 </div>
               </div>
 
@@ -582,9 +642,24 @@ function TicketsView({ tickets, onRefresh }: { tickets: IamTicket[]; onRefresh: 
                 </div>
               </div>
 
-              {t.plan.reasoning && (
+              {(t.plan.justification ?? t.plan.reasoning) && (
                 <div style={{ marginTop: 12, padding: '8px 12px', background: '#f8f9fa', borderRadius: 6, fontSize: 12, color: '#495057', fontStyle: 'italic' }}>
-                  {t.plan.reasoning}
+                  {t.plan.justification ?? t.plan.reasoning}
+                </div>
+              )}
+
+              {/* Provision outcome banner */}
+              {provisionOutcome?.id === t.id && (
+                <div style={{
+                  marginTop: 12, padding: '10px 14px', borderRadius: 6,
+                  background: provisionOutcome.result.status === 'SUCCESS' ? '#e8f5e9' : '#ffebee',
+                  border: `1px solid ${provisionOutcome.result.status === 'SUCCESS' ? '#a5d6a7' : '#ef9a9a'}`,
+                  fontSize: 13,
+                }}>
+                  {provisionOutcome.result.status === 'SUCCESS'
+                    ? <>✅ <strong>Provisioned in GCP.</strong> Role <code style={{ color: '#7b1fa2' }}>{provisionOutcome.result.role}</code> is now active.</>
+                    : <>❌ <strong>Provisioning failed:</strong> {provisionOutcome.result.error ?? 'Unknown error'}</>
+                  }
                 </div>
               )}
             </div>
@@ -602,6 +677,7 @@ function TicketsView({ tickets, onRefresh }: { tickets: IamTicket[]; onRefresh: 
 export default function App() {
   // ── Navigation ──────────────────────────────────────────────────────────────
   const [navSection, setNavSection] = useState<NavSection>('dashboard')
+  const [costTab, setCostTab] = useState<'scan' | 'attribution'>('scan')
 
   // ── Cost Center: scan phase state ───────────────────────────────────────────
   const [phase, setPhase]                           = useState<Phase>('start')
@@ -898,6 +974,31 @@ export default function App() {
         {/* Cost Center */}
         {navSection === 'cost' && (
           <div>
+            {/* Sub-tabs: Scan | Attribution */}
+            <div style={{ display: 'flex', gap: 4, marginBottom: 20, borderBottom: '2px solid #dee2e6', paddingBottom: 0 }}>
+              {(['scan', 'attribution'] as const).map(tab => (
+                <button
+                  key={tab}
+                  onClick={() => setCostTab(tab)}
+                  style={{
+                    border: 'none', background: 'none', padding: '8px 18px', cursor: 'pointer',
+                    fontSize: 14, fontWeight: costTab === tab ? 700 : 400,
+                    color: costTab === tab ? '#1f77b4' : '#6c757d',
+                    borderBottom: costTab === tab ? '2px solid #1f77b4' : '2px solid transparent',
+                    marginBottom: -2,
+                  }}
+                >
+                  {tab === 'scan' ? '🔍 Scan Pipeline' : '💰 Attribution'}
+                </button>
+              ))}
+            </div>
+
+            {costTab === 'attribution' && (
+              <CostCenter initialProjectId={projectId || undefined} />
+            )}
+
+            {costTab === 'scan' && (
+            <div>
             {/* ── Start form ─────────────────────────────────────────────── */}
             {phase === 'start' && (
               <div>
@@ -1110,12 +1211,14 @@ export default function App() {
                 <button style={{ ...secondaryBtn, marginTop: 14 }} onClick={handleReset}>Try again</button>
               </div>
             )}
+            </div>
+            )}
           </div>
         )}
 
         {/* Security Hub */}
         {navSection === 'security' && (
-          <SecurityHubView resources={resources} />
+          <SecurityHub projectId={projectId || undefined} />
         )}
 
         {/* Tickets */}

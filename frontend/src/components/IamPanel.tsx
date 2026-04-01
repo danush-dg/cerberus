@@ -23,6 +23,7 @@ export function IamPanel({ onTicketCreated }: IamPanelProps) {
   const [requesterEmail, setRequesterEmail] = useState('')
   const [projectId, setProjectId]           = useState('')
   const [requestText, setRequestText]       = useState('')
+  const [roleName, setRoleName]             = useState('')
   const [loading, setLoading]               = useState(false)
   const [error, setError]                   = useState<string | null>(null)
   const [plan, setPlan]                     = useState<IamPlan | null>(null)
@@ -37,21 +38,27 @@ export function IamPanel({ onTicketCreated }: IamPanelProps) {
   // ---------------------------------------------------------------------------
 
   async function handleSynthesize() {
-    if (!requesterEmail.trim() || !projectId.trim() || !requestText.trim()) return
+    if (!requesterEmail.trim() || !projectId.trim() || !requestText.trim() || !roleName.trim()) return
     setLoading(true); setError(null); setPlan(null); setSubmitted(false)
     try {
-      const res = await fetch('/api/iam/synthesize', {
+      // POST /iam/request: synthesizes plan AND creates the ticket atomically.
+      const res = await fetch('/api/iam/request', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          natural_language_request: requestText.trim(),
           requester_email: requesterEmail.trim(),
           project_id: projectId.trim(),
-          request_text: requestText.trim(),
+          role: roleName.trim(),
         }),
       })
       const data = await res.json()
       if (!res.ok) { setError(data.error ?? `HTTP ${res.status}`); return }
-      setPlan(data)
+      // Response is an IAMTicket — extract the plan
+      setPlan(data.plan ?? data)
+      setSubmitted(true)
+      // Notify parent so Tickets tab refreshes and badge updates
+      onTicketCreated?.(data.plan ?? data)
     } catch (e) {
       setError(String(e))
     } finally {
@@ -75,7 +82,7 @@ export function IamPanel({ onTicketCreated }: IamPanelProps) {
 
   function handleReset() {
     setPlan(null); setSubmitted(false); setError(null)
-    setRequesterEmail(''); setProjectId(''); setRequestText('')
+    setRequesterEmail(''); setProjectId(''); setRequestText(''); setRoleName('')
   }
 
   // ---------------------------------------------------------------------------
@@ -131,97 +138,72 @@ export function IamPanel({ onTicketCreated }: IamPanelProps) {
                 <input style={inp} placeholder="nexus-tech-dev-sandbox" value={projectId} onChange={e => setProjectId(e.target.value)} />
               </div>
               <div style={row}>
-                <label style={lbl}>Access request</label>
+                <label style={lbl}>Custom Role Name</label>
+                <input
+                  style={inp}
+                  placeholder="e.g. bigquery-read-access, ml-pipeline-writer"
+                  value={roleName}
+                  onChange={e => setRoleName(e.target.value)}
+                />
+                <span style={{ fontSize: 11, color: '#888', marginTop: 2 }}>
+                  A descriptive name for this access. Cerberus will create a custom GCP role with minimum permissions.
+                </span>
+              </div>
+              <div style={row}>
+                <label style={lbl}>Justification</label>
                 <textarea
                   style={{ ...inp, height: 72, resize: 'vertical' }}
-                  placeholder="e.g. I need BigQuery write access and Cloud Storage read access for the ml-pipeline dataset"
+                  placeholder="e.g. I need read access to the ml-pipeline Cloud Storage bucket for model training"
                   value={requestText}
                   onChange={e => setRequestText(e.target.value)}
                 />
               </div>
               <button
                 style={{ ...btn, background: loading ? '#90a4ae' : '#1a237e', cursor: loading ? 'not-allowed' : 'pointer' }}
-                disabled={loading || !requesterEmail.trim() || !projectId.trim() || !requestText.trim()}
+                disabled={loading || !requesterEmail.trim() || !projectId.trim() || !requestText.trim() || !roleName.trim()}
                 onClick={handleSynthesize}
               >
-                {loading ? 'Synthesizing…' : 'Synthesize IAM Plan →'}
+                {loading ? 'Submitting…' : 'Request IAM Access →'}
               </button>
               {error && <div style={errBox}>{error}</div>}
             </div>
           )}
 
-          {plan && !submitted && (
+          {plan && submitted && (
             <div>
-              <div style={planHeader}>
-                <span style={{ fontWeight: 700, color: '#1a237e' }}>Plan synthesized — review before submitting</span>
+              <div style={{ ...planHeader, background: '#e8f5e9', borderColor: '#a5d6a7' }}>
+                <span style={{ fontWeight: 700, color: '#2e7d32' }}>✓ Access request submitted — pending admin approval</span>
               </div>
               <div style={section}>
                 <div style={sectionTitle}>Requester</div>
                 <div>{plan.requester_email}</div>
               </div>
               <div style={section}>
-                <div style={sectionTitle}>Custom Role</div>
-                <code style={pill}>{plan.custom_role_id}</code>
+                <div style={sectionTitle}>Requested Role</div>
+                <code style={{ ...pill, background: '#e3f2fd', color: '#1565c0' }}>{plan.role ?? plan.custom_role_id}</code>
               </div>
-              <div style={section}>
-                <div style={sectionTitle}>Permissions ({plan.permissions.length})</div>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
-                  {plan.permissions.map(p => (
-                    <code key={p} style={{ ...pill, background: '#e8f5e9', color: '#2e7d32' }}>{p}</code>
-                  ))}
+              {plan.permissions && plan.permissions.length > 0 && (
+                <div style={section}>
+                  <div style={sectionTitle}>Representative Permissions ({plan.permissions.length})</div>
+                  <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 4 }}>
+                    {plan.permissions.map(p => (
+                      <code key={p} style={{ ...pill, background: '#e8f5e9', color: '#2e7d32' }}>{p}</code>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
               <div style={section}>
-                <div style={sectionTitle}>IAM Condition (CEL)</div>
-                <code style={{ ...pill, background: '#fff8e1', color: '#6d4c41', fontSize: 12 }}>
-                  {plan.binding_condition || '—'}
-                </code>
-              </div>
-              <div style={section}>
-                <div style={sectionTitle}>Reasoning</div>
-                <p style={{ margin: 0, fontSize: 13, color: '#333', fontStyle: 'italic' }}>{plan.reasoning}</p>
-              </div>
-              <div style={section}>
-                <div style={sectionTitle}>Provisioning Checklist</div>
-                <ol style={{ margin: '6px 0 0 18px', padding: 0, fontSize: 13, lineHeight: 1.7 }}>
-                  {plan.checklist.map((step, i) => <li key={i} style={{ color: '#333' }}>{step}</li>)}
-                </ol>
-              </div>
-              <div style={section}>
-                <div style={{ display: 'flex', gap: 6, fontSize: 12, color: '#666' }}>
-                  <span>Budget alert: <strong>${plan.budget_alert_threshold_usd}/mo</strong></span>
-                  <span>·</span>
-                  <span>Review in: <strong>{plan.review_after_days} days</strong></span>
-                </div>
+                <div style={sectionTitle}>Justification</div>
+                <p style={{ margin: 0, fontSize: 13, color: '#333', fontStyle: 'italic' }}>{plan.justification ?? plan.reasoning}</p>
               </div>
               <div style={approvalBar}>
-                <span style={{ fontWeight: 600, fontSize: 14 }}>Submit for Admin Approval</span>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  <button style={{ ...btn, background: '#1a237e', padding: '8px 20px' }} onClick={handleSubmit}>
-                    Submit Ticket →
-                  </button>
-                  <button style={{ ...btn, background: '#78909c', padding: '8px 20px' }} onClick={handleReset}>
-                    Cancel
-                  </button>
-                </div>
+                <span style={{ fontSize: 13, color: '#555' }}>
+                  Ticket created — pending admin approval in the <strong>Tickets</strong> tab.
+                </span>
+                <button style={{ ...btn, background: '#455a64', padding: '8px 20px' }} onClick={handleReset}>
+                  New request
+                </button>
               </div>
-            </div>
-          )}
-
-          {submitted && (
-            <div style={{ ...resultBox, borderColor: '#1a237e', background: '#e8eaf6' }}>
-              <div style={{ fontWeight: 700, color: '#1a237e', marginBottom: 8 }}>Ticket submitted for admin review</div>
-              <p style={{ margin: 0, fontSize: 13, color: '#333' }}>
-                Role <code style={{ ...pill, background: '#c5cae9' }}>{plan?.custom_role_id}</code> is pending
-                approval for <strong>{plan?.requester_email}</strong> with{' '}
-                <strong>{plan?.permissions.length} permission(s)</strong>. No live GCP call has been made.
-              </p>
-              <p style={{ margin: '8px 0 0', fontSize: 12, color: '#555' }}>
-                Visit the <strong>Tickets</strong> tab in the sidebar to approve or reject this request.
-              </p>
-              <button style={{ ...btn, marginTop: 14, background: '#455a64', cursor: 'pointer' }} onClick={handleReset}>
-                New request
-              </button>
             </div>
           )}
         </>

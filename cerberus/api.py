@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -369,17 +368,42 @@ async def post_iam_ticket(req: IamTicketCreate) -> JSONResponse:
 
 @app.get("/iam/tickets")
 async def get_iam_tickets() -> JSONResponse:
-    """List all IAM tickets (pending, approved, rejected)."""
-    return JSONResponse(status_code=200, content=list(iam_tickets.values()))
+    """List all IAM tickets (pending, approved, rejected).
+
+    Reads from iam_head._tickets — the same store written by POST /iam/request.
+    Maps IAMTicket {ticket_id, created_at, plan, status} to the frontend shape
+    {id, ts, plan, status} that IamTicketResponse expects.
+    """
+    from cerberus.heads.iam_head import _tickets as _iam_tickets
+    items = []
+    for ticket in _iam_tickets.values():
+        items.append({
+            "id": ticket.ticket_id,
+            "ts": ticket.created_at,
+            "plan": ticket.plan.model_dump(),
+            "status": ticket.status,
+        })
+    return JSONResponse(status_code=200, content=items)
 
 
 @app.post("/iam/tickets/{ticket_id}/review")
 async def post_iam_ticket_review(ticket_id: str, req: IamTicketReview) -> JSONResponse:
-    """Approve or reject an IAM ticket."""
-    if ticket_id not in iam_tickets:
+    """Approve or reject an IAM ticket.
+
+    Reads from iam_head._tickets — the same store written by POST /iam/request.
+    """
+    from cerberus.heads.iam_head import _tickets as _iam_tickets, approve_ticket, reject_ticket
+    if ticket_id not in _iam_tickets:
         return JSONResponse(status_code=404, content={"error": "Ticket not found."})
     if req.action not in ("approved", "rejected"):
         return JSONResponse(status_code=400, content={"error": "action must be 'approved' or 'rejected'"})
-    iam_tickets[ticket_id]["status"] = req.action
-    logger.info("IAM ticket %s %s", ticket_id, req.action)
-    return JSONResponse(status_code=200, content={"status": req.action})
+    try:
+        if req.action == "approved":
+            ticket = await approve_ticket(ticket_id, reviewer_email="admin@cerberus")
+        else:
+            ticket = await reject_ticket(ticket_id, reviewer_email="admin@cerberus")
+        logger.info("IAM ticket %s %s", ticket_id, req.action)
+        return JSONResponse(status_code=200, content={"status": ticket.status})
+    except Exception as exc:
+        logger.exception("IAM ticket review failed for %s", ticket_id)
+        return JSONResponse(status_code=500, content={"error": str(exc)})

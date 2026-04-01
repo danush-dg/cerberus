@@ -57,6 +57,34 @@ export interface IamTicketResponse {
   status: 'pending' | 'approved' | 'rejected'
 }
 
+export interface CostBreakdownRow {
+  owner_email: string
+  cost_usd: number
+}
+
+export interface ProjectCostSummaryResponse {
+  project_id: string
+  total_usd: number
+  attributed_usd: number
+  unattributed_usd: number
+  period: string
+  breakdown: CostBreakdownRow[]
+}
+
+export interface UserCostResourceResponse {
+  resource_id: string
+  resource_type: string
+  cost_usd: number
+}
+
+export interface UserCostSummaryResponse {
+  owner_email: string
+  project_id: string
+  total_usd: number
+  resource_count: number
+  resources: UserCostResourceResponse[]
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -145,5 +173,43 @@ export async function reviewTicket(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action }),
   })
-  return handleResponse<void>(res)
+  await handleResponse<void>(res)
+}
+
+export interface ProvisionResult {
+  status: 'DRY_RUN' | 'SUCCESS' | 'FAILED'
+  role?: string
+  error?: string
+}
+
+export async function provisionTicket(
+  ticketId: string,
+  dryRun: boolean,
+): Promise<ProvisionResult> {
+  const res = await fetch(`${API_BASE}/tickets/${ticketId}/provision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dry_run: dryRun }),
+  })
+  return handleResponse<ProvisionResult>(res)
+}
+
+// ---------------------------------------------------------------------------
+// Cost endpoints (Task 10.3)
+// ---------------------------------------------------------------------------
+
+export async function getProjectCostSummary(
+  projectId: string,
+): Promise<ProjectCostSummaryResponse> {
+  const res = await fetch(`${API_BASE}/cost/project/${encodeURIComponent(projectId)}`)
+  return handleResponse<ProjectCostSummaryResponse>(res)
+}
+
+export async function getUserCostSummary(
+  ownerEmail: string,
+  projectId: string,
+): Promise<UserCostSummaryResponse> {
+  const params = new URLSearchParams({ owner_email: ownerEmail, project_id: projectId })
+  const res = await fetch(`${API_BASE}/cost/user?${params}`)
+  return handleResponse<UserCostSummaryResponse>(res)
 }

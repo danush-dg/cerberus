@@ -24,3 +24,4 @@ class BudgetStatus(BaseModel):
     threshold_usd: float
     breached: bool
     percent_used: float
+    live_budget_threshold_usd: float | None = None

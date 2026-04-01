@@ -1,4 +1,4 @@
-# Claude.md — v1.0 · FROZEN · 2026-03-30
+# Claude.md — v2.0 · FROZEN · 2026-03-31
 
 ---
 
@@ -171,6 +171,46 @@ must catch it, write a `NODE_ERROR` JSONL entry, set `error_message` in state, a
 set `run_complete=True`. The React UI must never display a raw stack trace or
 remain in an indefinite loading state. This is never negotiable.
 
+**INV-IAM-01:** A Gemini synthesis call must complete and return a `SynthesizedIAMPlan`
+before any `IAMTicket` is created. The route `POST /iam/request/{id}/confirm` must
+reject calls where no plan exists for the request. The React UI must not render a
+"Confirm & Create Ticket" button until `synthesizedPlan` is non-null in component
+state. This is never negotiable.
+
+**INV-IAM-02:** `provision_iam_binding` must default `dry_run=True`. The route
+`POST /tickets/{ticket_id}/provision` must reject calls where
+`ticket.status != "approved"`. The "Provision Live" button in `TicketPanel.tsx`
+must only render after a dry-run preview result is present in component state — not
+hidden with CSS, but conditionally rendered. This is never negotiable.
+
+**INV-IAM-03:** The IAM asset inventory table in `IAMPanel.tsx` must render `"—"`
+(em-dash) for any null `identity`, `role`, or `project_id` field in an `IAMBinding`
+record. No field may render as empty string, `undefined`, or `null` in the UI.
+This is never negotiable.
+
+**INV-COST-01:** `get_project_cost_summary` must include an unattributed row
+`{"owner_email": "unattributed", "cost_usd": X}` in the `breakdown` list whenever
+`unattributed_usd > 0`. This row must never be silently excluded. `CostCenter.tsx`
+must render this row visibly. This is never negotiable.
+
+**INV-COST-02:** `cost_head.py` must not import or call any `google-cloud-billing`
+API. All cost data at query time comes exclusively from ChromaDB resource history
+written by `audit_node`. This is never negotiable.
+
+**INV-SEC2-01:** `get_security_flags` must flag an identity as `OVER_PERMISSIONED`
+only when BOTH conditions are true: (1) the identity holds `roles/owner` or
+`roles/editor`, AND (2) their last IAM activity timestamp is more than 30 days ago.
+Neither condition alone is sufficient to raise this flag. This is never negotiable.
+
+**INV-SEC2-02:** Every `BUDGET_BREACH` security flag raised by `check_budget_status`
+must produce a JSONL audit entry with `action_type="SECURITY_FLAG"` via
+`write_audit_entry`. The JSONL write must complete before the flag is returned.
+This is never negotiable.
+
+**INV-SEC2-03:** `pdf_report.py` must use only `reportlab` to generate PDF bytes.
+No network calls, GCP API calls, or file I/O may occur inside `generate_audit_report`.
+The function must return `bytes` beginning with `b'%PDF'`. This is never negotiable.
+
 ---
 
 ## 3. Scope Boundary
@@ -220,6 +260,32 @@ scripts/verify_seed.py
 scripts/run_demo_smoke_test.py
 scripts/demo_guardrails.py
 scripts/print_run_summary.py
+cerberus/models/__init__.py
+cerberus/models/iam_ticket.py
+cerberus/models/cost_record.py
+cerberus/models/security_flag.py
+cerberus/heads/__init__.py
+cerberus/heads/iam_head.py
+cerberus/heads/cost_head.py
+cerberus/heads/security_head.py
+cerberus/services/__init__.py
+cerberus/services/pdf_report.py
+cerberus/routes/__init__.py
+cerberus/routes/iam_routes.py
+cerberus/routes/cost_routes.py
+cerberus/routes/security_routes.py
+cerberus/routes/ticket_routes.py
+tests/test_iam_head.py
+tests/test_cost_head.py
+tests/test_security_head.py
+tests/test_routes.py
+tests/test_pdf_report.py
+frontend/src/components/SlideNav.tsx
+frontend/src/components/CostCenter.tsx
+frontend/src/components/SecurityHub.tsx
+frontend/src/components/TicketPanel.tsx
+SESSION_10_LOG.md
+SESSION_10_VERIFICATION_RECORD.md
 pyproject.toml
 .env.example
 .gitignore
@@ -411,6 +477,18 @@ POST /run/{run_id}/approve   resume graph with approved_ids
 GET  /run/{run_id}/status    return run state (no credentials)
 GET  /run/{run_id}/summary   return COST_SUMMARY as JSON (no credentials, Task 9.3)
 POST /iam/synthesize         synthesize least-privilege IAM plan from natural language (Task 9.1 UI)
+POST /iam/request            submit natural-language IAM access request (Task 10.2)
+GET  /iam/request/{id}/preview  preview synthesized IAM plan before confirmation (Task 10.2)
+POST /iam/request/{id}/confirm  confirm and create IAMTicket from plan (Task 10.2)
+GET  /iam/inventory          list live GCP IAM bindings for a project (Task 10.2)
+GET  /cost/project/{id}      per-project cost summary from ChromaDB (Task 10.3)
+GET  /cost/user              per-user cost summary (query: owner_email, project_id) (Task 10.3)
+GET  /security/flags         active security flags for a project (Task 10.4)
+GET  /security/budget-status budget breach status (Task 10.4)
+GET  /security/report/download  PDF audit report download (Task 10.4)
+GET  /tickets                list all IAM tickets (Task 10.2)
+POST /tickets/{id}/approve   approve a pending IAM ticket (Task 10.2)
+POST /tickets/{id}/provision provision an approved ticket (dry_run=True default) (Task 10.2)
 ```
 
 ### Ownership lookup priority (exact order — do not reorder)

@@ -1,3 +1,31 @@
+export interface CostBreakdownRow {
+  owner_email: string
+  cost_usd: number
+}
+
+export interface ProjectCostSummary {
+  project_id: string
+  total_usd: number
+  attributed_usd: number
+  unattributed_usd: number
+  period: string
+  breakdown: CostBreakdownRow[]
+}
+
+export interface UserCostResource {
+  resource_id: string
+  resource_type: string
+  cost_usd: number
+}
+
+export interface UserCostSummary {
+  owner_email: string
+  project_id: string
+  total_usd: number
+  resource_count: number
+  resources: UserCostResource[]
+}
+
 export interface ResourceRow {
   resource_id: string
   resource_type: string
@@ -16,13 +44,18 @@ export type NavSection = 'dashboard' | 'iam' | 'cost' | 'security' | 'tickets'
 
 export interface IamPlan {
   requester_email: string
-  custom_role_id: string
+  project_id?: string
+  // user-supplied GCP role (e.g. "roles/storage.objectViewer")
+  role?: string
+  // legacy field from old synthesize endpoint — kept for ticket display fallback
+  custom_role_id?: string
   permissions: string[]
-  binding_condition: string
-  budget_alert_threshold_usd: number
-  review_after_days: number
-  checklist: string[]
-  reasoning: string
+  justification?: string
+  reasoning?: string
+  binding_condition?: string
+  budget_alert_threshold_usd?: number
+  review_after_days?: number
+  checklist?: string[]
 }
 
 export interface IamTicket {
