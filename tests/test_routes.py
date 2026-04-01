@@ -4,11 +4,41 @@ Verifies that all new routes are registered and reachable (not 404),
 and that existing routes remain untouched.
 """
 import pytest
+import pytest
 from fastapi.testclient import TestClient
 
 from cerberus.api import app
+from cerberus.heads.iam_head import _tickets
+from cerberus.models.iam_ticket import IAMTicket, SynthesizedIAMPlan
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def _clear_tickets():
+    _tickets.clear()
+    yield
+    _tickets.clear()
+
+
+def _seed_ticket(ticket_id: str = "route-test-ticket") -> str:
+    """Insert a minimal ticket into the in-memory store for route tests."""
+    plan = SynthesizedIAMPlan(
+        requester_email="alice@x.com",
+        project_id="nexus-tech-dev-1",
+        role="roles/viewer",
+        justification="route test",
+        synthesized_at="2026-04-01T00:00:00Z",
+        raw_request="route test request",
+    )
+    ticket = IAMTicket(
+        ticket_id=ticket_id,
+        plan=plan,
+        status="pending",
+        created_at="2026-04-01T00:00:00Z",
+    )
+    _tickets[ticket_id] = ticket
+    return ticket_id
 
 
 def test_iam_inventory_route_exists():
@@ -22,12 +52,14 @@ def test_iam_request_route_exists():
 
 
 def test_iam_request_preview_route_exists():
-    r = client.get("/iam/request/test-id/preview")
+    tid = _seed_ticket()
+    r = client.get(f"/iam/request/{tid}/preview")
     assert r.status_code != 404
 
 
 def test_iam_request_confirm_route_exists():
-    r = client.post("/iam/request/test-id/confirm")
+    tid = _seed_ticket()
+    r = client.post(f"/iam/request/{tid}/confirm")
     assert r.status_code != 404
 
 
@@ -62,12 +94,16 @@ def test_tickets_route_exists():
 
 
 def test_ticket_approve_route_exists():
-    r = client.post("/tickets/test-id/approve")
+    tid = _seed_ticket()
+    r = client.post(f"/tickets/{tid}/approve")
     assert r.status_code != 404
 
 
 def test_ticket_provision_route_exists():
-    r = client.post("/tickets/test-id/provision")
+    # Must be approved first — provision on pending returns 400, not 404
+    tid = _seed_ticket()
+    _tickets[tid].status = "approved"
+    r = client.post(f"/tickets/{tid}/provision")
     assert r.status_code != 404
 
 
