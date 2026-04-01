@@ -12,10 +12,18 @@ from pydantic import BaseModel
 from cerberus.config import get_config, validate_project_id
 from cerberus.graph import cerberus_graph
 from cerberus.state import initialise_state, CerberusState
+from cerberus.routes.iam_routes import router as iam_router
+from cerberus.routes.cost_routes import router as cost_router
+from cerberus.routes.security_routes import router as security_router
+from cerberus.routes.ticket_routes import router as ticket_router
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Cerberus")
+app.include_router(iam_router)
+app.include_router(cost_router)
+app.include_router(security_router)
+app.include_router(ticket_router)
 
 # In-memory store keyed by run_id.
 # Each entry: {"thread_id", "project_id", "status", "approval_payload", "final_state", "error_message"}
