@@ -41,8 +41,7 @@ SYSTEM_PROMPT: str = (
     "- Reasoning must be 3 sentences or fewer. Sentence 1 must cite at least one of: "
     "idle duration in hours, owner last activity age in days, or estimated monthly cost in USD.\n"
     "- If estimated_monthly_cost is null, set estimated_monthly_savings=0.0 and note this.\n"
-    "- Do not recommend deletion without evidence of abandonment.\n\n"
-    f"Output ONLY valid JSON matching this schema:\n{ResourceDecision.model_json_schema()}"
+    "- Do not recommend deletion without evidence of abandonment."
 )
 
 
@@ -90,8 +89,10 @@ async def _call_gemini(client: genai.Client, model_name: str, prompt: str) -> st
         model=model_name,
         contents=prompt,
         config=types.GenerateContentConfig(
+            system_instruction=SYSTEM_PROMPT,
             temperature=0,
             response_mime_type="application/json",
+            response_schema=ResourceDecision,
         ),
     )
     return response.text

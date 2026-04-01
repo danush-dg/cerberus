@@ -2714,7 +2714,1656 @@ where the GCP state-change was verified — not just approved. If the stop call
 succeeded but the verification read failed, that resource is FAILED, not SUCCESS,
 and is excluded from the savings total."
 
+
+# Session 10 — Three-Head Expansion
+## Cerberus · PBVI Phase 6 · session/s10_three_heads
+## Claude.md: v2.0 · FROZEN · 2026-03-31
+
+> This file contains all three Session 10 artefacts in order:
+> 1. Build Guide (CC prompts, test cases, verification commands)
+> 2. Session Log (to be filled during the session)
+> 3. Verification Record (to be filled after each task)
+
 ---
+
+# SESSION 10 BUILD GUIDE — Three-Head Expansion
+## Cerberus · PBVI Phase 6 · session/s10_three_heads
+## Claude.md: v2.0 · FROZEN · 2026-03-31
+
+---
+
+## Before You Start — Gate Check
+
+```
+[ ] Sessions 1–8 PRs are all merged to main
+[ ] pytest tests/ -v passes green on main (all existing tests)
+[ ] Claude.md v2.0 is committed to the repo root
+[ ] reportlab is added to pyproject.toml and uv sync has been run
+[ ] You can answer without opening any document:
+    "What does each head do and where does its data come from?"
+```
+
+---
+
+## Branch
+
+```bash
+git checkout main && git pull origin main
+git checkout -b session/s10_three_heads
+git add Claude.md  # commit the v2.0 update first
+git commit -m "Claude.md v2.0: three-head expansion scope"
+```
+
+Commit `SESSION_10_LOG.md` and `SESSION_10_VERIFICATION_RECORD.md` before any build task:
+```bash
+git add SESSION_10_LOG.md SESSION_10_VERIFICATION_RECORD.md
+git commit -m "Session 10: scaffold — SESSION_LOG and VERIFICATION_RECORD"
+```
+
+---
+
+## Session Integration Check
+*(run after all 10 tasks committed — not before)*
+
+```bash
+# Backend: all new routes register and respond
+uvicorn cerberus.api:app --port 8001 &
+sleep 2
+
+curl -s http://localhost:8001/iam/inventory?project_id=nexus-tech-dev-sandbox | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'IAM inventory: {len(d)} records')"
+curl -s "http://localhost:8001/cost/project/nexus-tech-dev-sandbox" | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Cost project: total={d.get(\"total_usd\",\"missing\")}')"
+curl -s http://localhost:8001/security/flags?project_id=nexus-tech-dev-sandbox | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Security flags: {len(d)} flags')"
+curl -s http://localhost:8001/tickets | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'Tickets: {len(d)} pending')"
+
+# PDF generation
+python3 -c "
+from cerberus.services.pdf_report import generate_audit_report
+pdf_bytes = generate_audit_report('nexus-tech-dev-sandbox', [])
+assert len(pdf_bytes) > 1000, 'PDF too small — generation failed'
+print(f'PDF report: {len(pdf_bytes)} bytes — PASS')
+"
+
+# Frontend: all 5 pages build without error
+cd frontend && npm run build 2>&1 | tail -5
+cd ..
+
+# Backend: all new tests pass
+pytest tests/test_iam_head.py tests/test_cost_head.py \
+       tests/test_security_head.py tests/test_routes.py \
+       tests/test_pdf_report.py -v
+
+kill %1 2>/dev/null
+echo "Session 10 integration: PASS"
+```
+
+---
+
+## Task 10.1 — Backend models, head skeletons, and route registration
+
+**What this builds:** Pydantic models for IAM tickets, cost records, and security flags.
+Empty skeleton files for the three heads. New routes registered in `api.py`.
+No logic — stubs only.
+
+**CC prompt:**
+```
+Create these files. All head and service files are stubs — function signatures
+with `pass` bodies only. No logic implemented in this task.
+
+--- cerberus/models/iam_ticket.py ---
+from pydantic import BaseModel
+from typing import Literal
+
+class IAMRequest(BaseModel):
+    natural_language_request: str
+    requester_email: str
+    project_id: str
+
+class SynthesizedIAMPlan(BaseModel):
+    requester_email: str
+    project_id: str
+    role: str
+    justification: str
+    synthesized_at: str       # ISO 8601
+    raw_request: str
+
+class IAMTicket(BaseModel):
+    ticket_id: str            # uuid4
+    plan: SynthesizedIAMPlan
+    status: Literal["pending", "approved", "rejected", "provisioned"]
+    created_at: str
+    reviewed_at: str | None = None
+    reviewed_by: str | None = None
+
+class IAMBinding(BaseModel):
+    identity: str             # user email or service account
+    role: str
+    project_id: str
+    binding_type: Literal["user", "serviceAccount", "group"]
+
+--- cerberus/models/cost_record.py ---
+from pydantic import BaseModel
+
+class ProjectCostSummary(BaseModel):
+    project_id: str
+    total_usd: float
+    attributed_usd: float
+    unattributed_usd: float
+    period: str               # "current_month"
+    breakdown: list[dict]     # [{"owner_email": str, "cost_usd": float}]
+
+class UserCostSummary(BaseModel):
+    owner_email: str
+    project_id: str
+    total_usd: float
+    resource_count: int
+    resources: list[dict]     # [{"resource_id": str, "resource_type": str, "cost_usd": float}]
+
+--- cerberus/models/security_flag.py ---
+from pydantic import BaseModel
+from typing import Literal
+
+FLAG_TYPES = Literal["OVER_PERMISSIONED", "GHOST_RESOURCE", "BUDGET_BREACH"]
+
+class SecurityFlag(BaseModel):
+    flag_id: str              # uuid4
+    flag_type: FLAG_TYPES
+    identity_or_resource: str # email or resource_id
+    project_id: str
+    detected_at: str          # ISO 8601
+    detail: str               # human-readable explanation
+    status: Literal["open", "acknowledged", "resolved"] = "open"
+
+class BudgetStatus(BaseModel):
+    project_id: str
+    current_month_usd: float
+    threshold_usd: float
+    breached: bool
+    percent_used: float
+
+--- cerberus/heads/__init__.py --- (empty)
+
+--- cerberus/heads/iam_head.py --- (stub)
+async def synthesize_iam_request(request, config) -> SynthesizedIAMPlan: pass
+async def create_ticket(plan) -> IAMTicket: pass
+async def get_pending_tickets() -> list[IAMTicket]: pass
+async def approve_ticket(ticket_id: str, reviewer_email: str) -> IAMTicket: pass
+async def provision_iam_binding(ticket: IAMTicket, dry_run: bool) -> dict: pass
+async def get_iam_inventory(project_id: str, credentials) -> list[IAMBinding]: pass
+
+--- cerberus/heads/cost_head.py --- (stub)
+async def get_project_cost_summary(project_id: str) -> ProjectCostSummary: pass
+async def get_user_cost_summary(owner_email: str, project_id: str) -> UserCostSummary: pass
+
+--- cerberus/heads/security_head.py --- (stub)
+async def get_security_flags(project_id: str, credentials) -> list[SecurityFlag]: pass
+async def check_budget_status(project_id: str) -> BudgetStatus: pass
+async def generate_audit_report_data(project_id: str) -> dict: pass
+
+--- cerberus/services/pdf_report.py --- (stub)
+def generate_audit_report(project_id: str, flags: list) -> bytes: pass
+
+--- cerberus/routes/iam_routes.py ---
+Register these FastAPI routes (return empty placeholders — logic in Task 10.2):
+  POST /iam/request
+  GET  /iam/request/{request_id}/preview
+  POST /iam/request/{request_id}/confirm
+  GET  /iam/inventory
+
+--- cerberus/routes/cost_routes.py ---
+  GET /cost/project/{project_id}
+  GET /cost/user  (query params: owner_email, project_id)
+
+--- cerberus/routes/security_routes.py ---
+  GET /security/flags
+  GET /security/budget-status
+  GET /security/report/download
+
+--- cerberus/routes/ticket_routes.py ---
+  GET  /tickets
+  POST /tickets/{ticket_id}/approve
+  POST /tickets/{ticket_id}/provision
+
+In cerberus/api.py: import and include all four new routers.
+Use app.include_router() with appropriate prefixes.
+Do not touch any existing route or endpoint.
+```
+
+**Test cases:**
+```python
+# tests/test_routes.py
+from fastapi.testclient import TestClient
+from cerberus.api import app
+client = TestClient(app)
+
+def test_iam_inventory_route_exists():
+    r = client.get("/iam/inventory?project_id=nexus-tech-dev-1")
+    assert r.status_code != 404
+
+def test_cost_project_route_exists():
+    r = client.get("/cost/project/nexus-tech-dev-1")
+    assert r.status_code != 404
+
+def test_security_flags_route_exists():
+    r = client.get("/security/flags?project_id=nexus-tech-dev-1")
+    assert r.status_code != 404
+
+def test_tickets_route_exists():
+    r = client.get("/tickets")
+    assert r.status_code != 404
+
+def test_existing_run_route_untouched():
+    r = client.get("/run/nonexistent-id/status")
+    assert r.status_code == 404  # not 500 — existing routes still work
+
+def test_iam_ticket_model_validation():
+    from cerberus.models.iam_ticket import IAMTicket, SynthesizedIAMPlan
+    plan = SynthesizedIAMPlan(
+        requester_email="alice@x.com", project_id="nexus-tech-dev-1",
+        role="roles/bigquery.dataViewer", justification="needs read access",
+        synthesized_at="2026-03-31T10:00:00Z", raw_request="give alice bigquery read"
+    )
+    ticket = IAMTicket(ticket_id="t-1", plan=plan, status="pending",
+                       created_at="2026-03-31T10:00:00Z")
+    assert ticket.status == "pending"
+
+def test_security_flag_type_locked():
+    from cerberus.models.security_flag import SecurityFlag
+    import pytest
+    with pytest.raises(Exception):
+        SecurityFlag(flag_id="f-1", flag_type="INVALID_TYPE",
+                     identity_or_resource="vm-1", project_id="p",
+                     detected_at="2026-01-01T00:00:00Z", detail="test")
+```
+
+**Verification command:**
+```bash
+pytest tests/test_routes.py -v
+```
+
+**Invariants touched:** INV-IAM-01 (ticket model has status machine), INV-IAM-03 (IAMBinding has identity, role, project_id fields), INV-COST-01 (ProjectCostSummary has attributed/unattributed split), INV-SEC2-03 (pdf_report stub exists).
+
+**Code review:**
+- [ ] No existing route in `api.py` is modified — only new `include_router` calls added
+- [ ] `IAMTicket.status` is a `Literal` with exactly 4 values: pending/approved/rejected/provisioned
+- [ ] `SecurityFlag.flag_type` is a `Literal` with exactly 3 values matching Claude.md enum
+- [ ] `ProjectCostSummary` has both `attributed_usd` AND `unattributed_usd` — not one total field
+
+**Commit:** `git add -A && git commit -m "Task 10.1: backend models, head skeletons, route registration"`
+
+---
+
+## Task 10.2 — IAM Head: Gemini synthesis, ticket lifecycle, asset inventory
+
+**What this builds:** Full implementation of `iam_head.py` and `iam_routes.py`.
+Gemini converts natural language → structured IAM plan → ticket. Admin approves.
+Asset inventory reads live GCP IAM policy.
+
+**Why this is fast:** Gemini synthesis reuses the same `google-generativeai` pattern
+from `reason_node.py`. The ticket store is an in-memory dict (same pattern as `active_runs`
+in `api.py`). No new infrastructure.
+
+**CC prompt:**
+```
+Implement cerberus/heads/iam_head.py fully.
+
+MODULE-LEVEL STATE:
+  _tickets: dict[str, IAMTicket] = {}   # in-memory ticket store keyed by ticket_id
+
+synthesize_iam_request(request: IAMRequest, config: CerberusConfig) -> SynthesizedIAMPlan:
+  1. Build a Gemini prompt:
+     system = "You are a GCP IAM analyst. Convert a natural language access request
+               into a structured IAM plan. Output ONLY valid JSON matching this schema:
+               {SynthesizedIAMPlan schema}. Choose the minimum-privilege role that
+               satisfies the request. Never suggest roles/owner or roles/editor unless
+               explicitly requested and justified."
+     user = f"Request: {request.natural_language_request}\n
+              Requester: {request.requester_email}\n
+              Project: {request.project_id}"
+  2. Call genai.GenerativeModel(config.gemini_model).generate_content with temperature=0,
+     response_mime_type="application/json".
+  3. Parse response. On JSONDecodeError: raise ValueError("IAM synthesis failed: unparseable response")
+  4. Return SynthesizedIAMPlan(**parsed, raw_request=request.natural_language_request,
+     synthesized_at=datetime.utcnow().isoformat())
+
+create_ticket(plan: SynthesizedIAMPlan) -> IAMTicket:
+  ticket_id = str(uuid.uuid4())
+  ticket = IAMTicket(ticket_id=ticket_id, plan=plan, status="pending",
+                     created_at=datetime.utcnow().isoformat())
+  _tickets[ticket_id] = ticket
+  return ticket
+
+get_pending_tickets() -> list[IAMTicket]:
+  return [t for t in _tickets.values() if t.status == "pending"]
+
+approve_ticket(ticket_id: str, reviewer_email: str) -> IAMTicket:
+  If ticket_id not in _tickets: raise KeyError(f"Ticket {ticket_id} not found")
+  ticket = _tickets[ticket_id]
+  ticket.status = "approved"
+  ticket.reviewed_at = datetime.utcnow().isoformat()
+  ticket.reviewed_by = reviewer_email
+  return ticket
+
+provision_iam_binding(ticket: IAMTicket, dry_run: bool = True) -> dict:
+  If dry_run:
+    return {"status": "DRY_RUN",
+            "would_add": f"{ticket.plan.identity} → {ticket.plan.role} on {ticket.plan.project_id}",
+            "ticket_id": ticket.ticket_id}
+  Else:
+    Use gcp_call_with_retry to call resourcemanager_v3.ProjectsClient.set_iam_policy
+    adding the new binding. On success: ticket.status = "provisioned". Return result.
+
+get_iam_inventory(project_id: str, credentials) -> list[IAMBinding]:
+  Calls resourcemanager_v3.ProjectsClient.get_iam_policy(project_id).
+  For each binding: for each member: extract binding_type (user/serviceAccount/group),
+  identity (strip "user:" or "serviceAccount:" prefix), role.
+  Returns list of IAMBinding records.
+  Wrap in gcp_call_with_retry. On CerberusRetryExhausted: return [].
+
+Implement cerberus/routes/iam_routes.py — wire all routes to iam_head functions.
+POST /iam/request → synthesize_iam_request then create_ticket. Return ticket.
+GET  /iam/request/{request_id}/preview → return _tickets[request_id].plan as JSON
+POST /iam/request/{request_id}/confirm → return ticket (already created — confirm is idempotent)
+GET  /iam/inventory → get_iam_inventory (project_id from query param)
+```
+
+**Test cases:**
+```python
+# tests/test_iam_head.py
+
+def test_synthesis_calls_gemini_with_temperature_zero(mock_gemini_iam):
+    # mock returns valid SynthesizedIAMPlan JSON
+    result = synthesize_iam_request(
+        IAMRequest(natural_language_request="give alice bigquery read",
+                   requester_email="alice@x.com", project_id="nexus-tech-dev-1"),
+        mock_config
+    )
+    assert result.role is not None
+    mock_gemini_iam.generate_content.assert_called_once()
+    call_kwargs = mock_gemini_iam.generate_content.call_args
+    assert call_kwargs[1]["generation_config"].temperature == 0
+
+def test_synthesis_never_suggests_owner_for_simple_request(mock_gemini_returns_owner):
+    # If Gemini tries to return roles/owner for a read request, the function
+    # should not blindly accept it — this tests the prompt instruction
+    # (note: this is a prompt-quality test, not a code guard)
+    pass  # documented as prompt evaluation item
+
+def test_create_ticket_stores_in_memory():
+    plan = make_test_plan()
+    ticket = create_ticket(plan)
+    assert ticket.ticket_id in _tickets
+    assert ticket.status == "pending"
+
+def test_approve_ticket_changes_status():
+    plan = make_test_plan()
+    ticket = create_ticket(plan)
+    approved = approve_ticket(ticket.ticket_id, "admin@x.com")
+    assert approved.status == "approved"
+    assert approved.reviewed_by == "admin@x.com"
+
+def test_provision_dry_run_returns_dry_run_status():
+    plan = make_test_plan()
+    ticket = create_ticket(plan)
+    approve_ticket(ticket.ticket_id, "admin@x.com")
+    result = provision_iam_binding(ticket, dry_run=True)
+    assert result["status"] == "DRY_RUN"
+    assert "would_add" in result
+
+def test_provision_live_never_called_without_approval(mock_gcp_iam):
+    # provision with dry_run=False on a "pending" ticket — this tests
+    # that callers (the route) must approve before provisioning
+    # The route layer enforces this — tested in test_routes.py
+    pass
+
+def test_get_pending_tickets_filters_non_pending():
+    plan = make_test_plan()
+    t1 = create_ticket(plan)
+    t2 = create_ticket(plan)
+    approve_ticket(t1.ticket_id, "admin@x.com")
+    pending = get_pending_tickets()
+    ids = [t.ticket_id for t in pending]
+    assert t1.ticket_id not in ids
+    assert t2.ticket_id in ids
+
+def test_iam_inventory_returns_binding_list(mock_gcp_iam_policy):
+    bindings = get_iam_inventory("nexus-tech-dev-1", mock_creds)
+    for b in bindings:
+        assert b.identity is not None
+        assert b.role is not None
+        assert b.project_id == "nexus-tech-dev-1"
+```
+
+**Verification command:**
+```bash
+pytest tests/test_iam_head.py -v
+```
+
+**Invariants touched:** INV-IAM-01 (synthesis before ticket creation enforced in route), INV-IAM-02 (dry_run=True default in provision), INV-IAM-03 (IAMBinding fields validated in test).
+
+**Code review:**
+- [ ] `synthesize_iam_request` calls Gemini at `temperature=0` — confirm in code
+- [ ] `provision_iam_binding` defaults `dry_run=True` — no live call without explicit False
+- [ ] Route `POST /tickets/{id}/provision` checks ticket.status == "approved" before calling provision — rejected/pending tickets must be blocked
+- [ ] `get_iam_inventory` wraps GCP call in `gcp_call_with_retry` — no custom retry
+
+**Commit:** `git add -A && git commit -m "Task 10.2: IAM Head — synthesis, ticket lifecycle, inventory"`
+
+---
+
+## Task 10.3 — Cost Head: per-project and per-user spend from ChromaDB
+
+**What this builds:** `cost_head.py` reads resource history from ChromaDB and
+aggregates spend by project and by owner email. No live GCP Billing API calls.
+
+**Why ChromaDB only:** INV-COST-02 explicitly prohibits live Billing API calls at query
+time. The cost data was written to ChromaDB by `audit_node` during scan runs. This task
+reads it.
+
+**CC prompt:**
+```
+Implement cerberus/heads/cost_head.py.
+
+get_project_cost_summary(project_id: str) -> ProjectCostSummary:
+  1. Query ChromaDB collection "resource_history" for all records where
+     metadata["project_id"] == project_id.
+     Use: collection.get(where={"project_id": project_id}, include=["metadatas"])
+  2. total_usd = sum of metadata["estimated_monthly_cost"] for all records
+     (use 0.0 if field missing or null)
+  3. attributed = records where metadata["owner_email"] != "unknown" and != None
+     attributed_usd = sum of their costs
+  4. unattributed_usd = total_usd - attributed_usd
+  5. breakdown = [{"owner_email": email, "cost_usd": cost} for each unique owner]
+     IMPORTANT: unattributed resources must appear as {"owner_email": "unattributed", "cost_usd": X}
+     in the breakdown — never silently excluded. (INV-COST-01)
+  6. Return ProjectCostSummary(...)
+
+  If ChromaDB query raises: log WARNING, return ProjectCostSummary with all zeros.
+
+get_user_cost_summary(owner_email: str, project_id: str) -> UserCostSummary:
+  1. Query ChromaDB where metadata["owner_email"] == owner_email
+     AND metadata["project_id"] == project_id
+  2. total_usd = sum of costs
+  3. resources = [{"resource_id": id, "resource_type": type, "cost_usd": cost}]
+  4. Return UserCostSummary(...)
+
+  If no records found: return UserCostSummary with total_usd=0.0, empty resources list.
+
+Implement cerberus/routes/cost_routes.py:
+  GET /cost/project/{project_id} → get_project_cost_summary(project_id)
+  GET /cost/user → get_user_cost_summary(owner_email, project_id) from query params
+    If owner_email or project_id missing from query: return HTTP 422 with message
+    "owner_email and project_id are required query parameters"
+```
+
+**Test cases:**
+```python
+# tests/test_cost_head.py
+
+def test_project_cost_includes_unattributed(tmp_chroma):
+    # seed ChromaDB with 2 attributed + 1 unattributed resource
+    upsert_resource_record(make_resource("vm-1", owner_email="alice@x.com",
+                           estimated_monthly_cost=45.0), "r1", "nexus-tech-dev-1")
+    upsert_resource_record(make_resource("vm-2", owner_email="bob@x.com",
+                           estimated_monthly_cost=30.0), "r1", "nexus-tech-dev-1")
+    upsert_resource_record(make_resource("disk-1", owner_email=None,
+                           estimated_monthly_cost=10.0), "r1", "nexus-tech-dev-1")
+
+    result = get_project_cost_summary("nexus-tech-dev-1")
+    assert result.total_usd == 85.0
+    assert result.attributed_usd == 75.0
+    assert result.unattributed_usd == 10.0
+    # unattributed must appear in breakdown
+    unattr = [b for b in result.breakdown if b["owner_email"] == "unattributed"]
+    assert len(unattr) == 1
+    assert unattr[0]["cost_usd"] == 10.0
+
+def test_attributed_plus_unattributed_equals_total(tmp_chroma, seed_mixed_resources):
+    result = get_project_cost_summary("nexus-tech-dev-1")
+    assert abs(result.attributed_usd + result.unattributed_usd - result.total_usd) < 0.01
+
+def test_user_cost_query_returns_matching_resources(tmp_chroma):
+    upsert_resource_record(make_resource("vm-alice-1", owner_email="alice@x.com",
+                           estimated_monthly_cost=45.0), "r1", "nexus-tech-dev-1")
+    upsert_resource_record(make_resource("vm-alice-2", owner_email="alice@x.com",
+                           estimated_monthly_cost=20.0), "r1", "nexus-tech-dev-1")
+    upsert_resource_record(make_resource("vm-bob-1", owner_email="bob@x.com",
+                           estimated_monthly_cost=30.0), "r1", "nexus-tech-dev-1")
+
+    result = get_user_cost_summary("alice@x.com", "nexus-tech-dev-1")
+    assert result.total_usd == 65.0
+    assert result.resource_count == 2
+
+def test_user_cost_empty_when_no_records(tmp_chroma):
+    result = get_user_cost_summary("nobody@x.com", "nexus-tech-dev-1")
+    assert result.total_usd == 0.0
+    assert result.resources == []
+
+def test_chroma_failure_returns_zeros(monkeypatch):
+    monkeypatch.setattr("cerberus.tools.chroma_client.get_chroma_collection",
+                        Mock(side_effect=Exception("chroma down")))
+    result = get_project_cost_summary("nexus-tech-dev-1")
+    assert result.total_usd == 0.0   # does not raise
+```
+
+**Verification command:**
+```bash
+pytest tests/test_cost_head.py -v
+```
+
+**Invariants touched:** INV-COST-01 (unattributed row always present), INV-COST-02 (no live GCP Billing API calls — confirm with grep).
+
+**Code review:**
+- [ ] No import of any `google-cloud-billing` module in `cost_head.py` — ChromaDB only
+- [ ] `unattributed` resources appear in `breakdown` list — not excluded
+- [ ] `attributed_usd + unattributed_usd == total_usd` — verify the arithmetic in code
+
+**Commit:** `git add -A && git commit -m "Task 10.3: Cost Head — project and user spend from ChromaDB"`
+
+---
+
+## Task 10.4 — Security Head: flags, budget alerts, PDF report
+
+**What this builds:** `security_head.py` with three flag types, budget check,
+and `pdf_report.py` generating a PDF using `reportlab`.
+
+**CC prompt:**
+```
+Implement cerberus/heads/security_head.py.
+
+MODULE CONSTANTS (import from Claude.md fixed stack):
+  OVER_PERMISSION_INACTIVITY_DAYS: int = 30
+
+get_security_flags(project_id: str, credentials) -> list[SecurityFlag]:
+  Runs three checks and combines results:
+
+  CHECK 1 — OVER_PERMISSIONED:
+    Get IAM inventory via get_iam_inventory(project_id, credentials) from iam_head.
+    For each binding where role in ("roles/owner", "roles/editor"):
+      Check last IAM activity via check_iam_last_activity(identity, project_id, credentials)
+      (import from enrich_node).
+      If last_activity is None OR (now - last_activity).days > OVER_PERMISSION_INACTIVITY_DAYS:
+        Create SecurityFlag(flag_type="OVER_PERMISSIONED",
+                            identity_or_resource=identity,
+                            detail=f"{identity} holds {role} but inactive for {days} days")
+
+  CHECK 2 — GHOST_RESOURCE (idle resources):
+    Query ChromaDB resource_history where project_id matches and
+    metadata["decision"] in ("safe_to_stop", "safe_to_delete").
+    Each matching record is a ghost.
+    Create SecurityFlag(flag_type="GHOST_RESOURCE",
+                        identity_or_resource=resource_id,
+                        detail=f"{resource_type} idle — {cost_usd}/month")
+
+  CHECK 3 — BUDGET_BREACH:
+    budget_status = check_budget_status(project_id) (see below).
+    If budget_status.breached:
+      Create SecurityFlag(flag_type="BUDGET_BREACH",
+                          identity_or_resource=project_id,
+                          detail=f"Spend ${budget_status.current_month_usd:.2f} exceeds "
+                                 f"threshold ${budget_status.threshold_usd:.2f}")
+
+  Write each flag to JSONL audit log with action_type="SECURITY_FLAG". (INV-SEC2-02 for BUDGET_BREACH)
+  Return combined list.
+
+check_budget_status(project_id: str) -> BudgetStatus:
+  1. Query ChromaDB for project_id records. Sum estimated_monthly_cost for current month.
+  2. Get threshold from get_config().budget_thresholds dict (key=project_id).
+     If project_id not in thresholds: use default threshold of 500.0 USD.
+  3. Return BudgetStatus(project_id=project_id,
+                          current_month_usd=total,
+                          threshold_usd=threshold,
+                          breached=(total > threshold),
+                          percent_used=round((total/threshold)*100, 1) if threshold > 0 else 0.0)
+
+generate_audit_report_data(project_id: str) -> dict:
+  Assembles data for PDF: runs get_security_flags, get_project_cost_summary,
+  get_iam_inventory. Returns dict with keys:
+  report_timestamp, project_id, resources_scanned, total_waste_identified,
+  iam_changes, security_flags, idle_resources.
+
+---
+
+Implement cerberus/services/pdf_report.py using reportlab ONLY.
+
+def generate_audit_report(project_id: str, report_data: dict) -> bytes:
+  Creates a PDF in memory (io.BytesIO). Returns bytes.
+  Sections in order (per Claude.md fixed stack):
+  1. Header: "Cerberus Audit Report", report_timestamp, project_id (bold 16pt)
+  2. Executive summary table: resources_scanned, flags_raised, iam_changes (count)
+  3. IAM changes table: columns identity, role, changed_at, changed_by
+  4. Security flags table: columns flag_type, identity/resource, detected_at, detail
+  5. Idle resources table: columns resource_id, type, last_activity, monthly_cost
+  6. Footer: "Generated by Cerberus — Agentic GCP Dev Environment Guardian"
+
+  Use reportlab.platypus: SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer.
+  Use reportlab.lib.styles: getSampleStyleSheet.
+  Return pdf_bytes = buffer.getvalue() after doc.build(elements).
+
+Add BUDGET_ALERT_THRESHOLD_DEFAULT: float = 500.0 to config.py as a module constant.
+Add budget_thresholds: dict[str, float] = {} to CerberusConfig (defaults to empty dict).
+```
+
+**Test cases:**
+```python
+# tests/test_security_head.py
+
+def test_over_permissioned_flag_raised_for_inactive_owner(mock_iam_inactive_owner,
+                                                           mock_chroma_empty):
+    flags = get_security_flags("nexus-tech-dev-1", mock_creds)
+    over = [f for f in flags if f.flag_type == "OVER_PERMISSIONED"]
+    assert len(over) >= 1
+    assert "inactive" in over[0].detail.lower() or "days" in over[0].detail
+
+def test_ghost_resource_flag_from_chroma(mock_iam_no_flags,
+                                          tmp_chroma_with_idle_resource):
+    flags = get_security_flags("nexus-tech-dev-1", mock_creds)
+    ghosts = [f for f in flags if f.flag_type == "GHOST_RESOURCE"]
+    assert len(ghosts) >= 1
+
+def test_budget_breach_flag_when_over_threshold(mock_iam_no_flags, tmp_chroma_expensive):
+    # total cost in chroma > threshold
+    flags = get_security_flags("nexus-tech-dev-1", mock_creds)
+    budget_flags = [f for f in flags if f.flag_type == "BUDGET_BREACH"]
+    assert len(budget_flags) == 1
+
+def test_budget_not_breached_when_under_threshold(mock_iam_no_flags, tmp_chroma_cheap):
+    flags = get_security_flags("nexus-tech-dev-1", mock_creds)
+    budget_flags = [f for f in flags if f.flag_type == "BUDGET_BREACH"]
+    assert len(budget_flags) == 0
+
+# tests/test_pdf_report.py
+
+def test_pdf_generates_valid_bytes():
+    pdf_bytes = generate_audit_report("nexus-tech-dev-1", {
+        "report_timestamp": "2026-03-31T10:00:00Z",
+        "project_id": "nexus-tech-dev-1",
+        "resources_scanned": 6,
+        "iam_changes": [],
+        "security_flags": [],
+        "idle_resources": []
+    })
+    assert isinstance(pdf_bytes, bytes)
+    assert len(pdf_bytes) > 1000       # non-trivial PDF
+    assert pdf_bytes[:4] == b"%PDF"    # valid PDF magic bytes
+
+def test_pdf_does_not_require_network(monkeypatch):
+    # Patch all network calls to raise — PDF must still generate
+    import socket
+    monkeypatch.setattr(socket, "getaddrinfo", Mock(side_effect=OSError("no network")))
+    pdf_bytes = generate_audit_report("nexus-tech-dev-1", {})
+    assert len(pdf_bytes) > 0         # generated without network
+
+def test_pdf_contains_project_id_text():
+    import io
+    # Just verify it's a non-empty PDF — content inspection is overkill for unit test
+    pdf_bytes = generate_audit_report("my-test-project", {})
+    assert len(pdf_bytes) > 500
+```
+
+**Verification command:**
+```bash
+pytest tests/test_security_head.py tests/test_pdf_report.py -v
+```
+
+**Invariants touched:** INV-SEC2-01 (two-condition over-permissioning check), INV-SEC2-02 (budget alert written to JSONL), INV-SEC2-03 (reportlab only, no network required).
+
+**Code review:**
+- [ ] `get_security_flags` CHECK 1 checks BOTH inactivity AND role — not one alone
+- [ ] `generate_audit_report` uses `io.BytesIO()` — no file system writes
+- [ ] No `requests`, `httpx`, or any network import in `pdf_report.py`
+- [ ] `reportlab` is the ONLY PDF library imported — no `weasyprint`, `fpdf`, `xhtml2pdf`
+- [ ] Budget breach flag is written to JSONL audit log — confirm `write_audit_entry` call
+
+**Commit:** `git add -A && git commit -m "Task 10.4: Security Head — flags, budget alerts, PDF report"`
+
+---
+
+## Task 10.5 — SlideNav and page shells
+
+**What this builds:** `SlideNav.tsx`, `App.tsx` updated with navigation state,
+and 5 empty page shell components. No data fetching yet.
+
+**CC prompt:**
+```
+Create frontend/src/components/SlideNav.tsx.
+
+Props:
+  currentPage: string
+  onNavigate: (page: string) => void
+
+Renders a fixed left sidebar with these menu items in order:
+  / → Dashboard (icon: grid)
+  /iam → IAM Center (icon: shield)
+  /cost → Cost Center (icon: currency-dollar)
+  /security → Security Hub (icon: lock-closed)
+  /tickets → Tickets (icon: ticket — or inbox if unavailable)
+
+Active item: highlighted background (use CSS variable --color-background-info)
+Inactive: transparent background, hover effect.
+Width: 220px fixed.
+
+No React Router. Navigation is: onClick={() => onNavigate('/iam')}
+The nav renders all items unconditionally — no role-based hiding.
+
+Update frontend/src/App.tsx:
+  Add state: const [currentPage, setCurrentPage] = useState('/')
+  Render SlideNav on the left.
+  Render the active page component on the right (switch on currentPage).
+  Page components for now: import all 5 pages, render based on currentPage.
+
+Create these 5 page shells (empty — just renders page title):
+  frontend/src/pages/DashboardPage.tsx  → <h1>Dashboard</h1>
+  frontend/src/pages/IAMPage.tsx        → <h1>IAM Center</h1>
+  frontend/src/pages/CostPage.tsx       → <h1>Cost Center</h1>
+  frontend/src/pages/SecurityPage.tsx   → <h1>Security Hub</h1>
+  frontend/src/pages/TicketsPage.tsx    → <h1>Tickets</h1>
+
+All components use TypeScript. No inline styles — use Tailwind utility classes only.
+The sidebar must not use position:fixed — use flex layout (flex-row at root,
+sidebar flex-shrink-0, content flex-grow). This avoids the iframe collapse issue.
+```
+
+**Test cases:**
+```typescript
+// frontend/src/components/SlideNav.test.tsx
+import { render, screen, fireEvent } from '@testing-library/react'
+import SlideNav from './SlideNav'
+
+test('renders all 5 nav items', () => {
+  render(<SlideNav currentPage="/" onNavigate={jest.fn()} />)
+  expect(screen.getByText('Dashboard')).toBeInTheDocument()
+  expect(screen.getByText('IAM Center')).toBeInTheDocument()
+  expect(screen.getByText('Cost Center')).toBeInTheDocument()
+  expect(screen.getByText('Security Hub')).toBeInTheDocument()
+  expect(screen.getByText('Tickets')).toBeInTheDocument()
+})
+
+test('active item has highlight class', () => {
+  render(<SlideNav currentPage="/iam" onNavigate={jest.fn()} />)
+  const iamItem = screen.getByText('IAM Center').closest('button') ||
+                  screen.getByText('IAM Center').closest('li')
+  expect(iamItem).toHaveClass(/active|selected|highlight|bg-/i)
+})
+
+test('clicking nav item calls onNavigate with correct path', () => {
+  const nav = jest.fn()
+  render(<SlideNav currentPage="/" onNavigate={nav} />)
+  fireEvent.click(screen.getByText('Cost Center'))
+  expect(nav).toHaveBeenCalledWith('/cost')
+})
+```
+
+**Verification command:**
+```bash
+cd frontend && npm test -- --testPathPattern=SlideNav --watchAll=false
+```
+
+**Invariants touched:** INV-UI-01 (layout must not break existing ApprovalTable — verify ApprovalTable test still passes after App.tsx change).
+
+**Code review:**
+- [ ] No React Router import anywhere
+- [ ] `position: fixed` does not appear in SlideNav — flex layout only
+- [ ] Existing `ApprovalTable.tsx` and `ExecutePanel.tsx` are unchanged
+
+**Commit:** `git add -A && git commit -m "Task 10.5: SlideNav and page shells"`
+
+---
+
+## Task 10.6 — IAM Panel: access request form and asset inventory table
+
+**What this builds:** `IAMPanel.tsx` (access request form with Gemini synthesis preview)
+and `AssetInventory.tsx` (IAM bindings table). Both inside `IAMPage.tsx`.
+
+**CC prompt:**
+```
+Create frontend/src/components/IAMPanel.tsx.
+
+State:
+  requestText: string         (textarea input)
+  requesterEmail: string      (email input)
+  synthesizing: boolean
+  synthesizedPlan: SynthesizedIAMPlan | null
+  confirmed: boolean
+  ticket: IAMTicket | null
+  error: string | null
+
+Flow:
+  1. User fills requestText + requesterEmail, clicks "Synthesize"
+  2. POST /iam/request → shows synthesizedPlan in a preview card
+  3. Preview card shows: role, justification, requesterEmail, project_id
+  4. User clicks "Confirm & Create Ticket" → POST /iam/request/{id}/confirm
+  5. Shows success: "Ticket created — pending admin review"
+
+Rules:
+  - "Synthesize" button disabled while synthesizing or if fields empty
+  - Preview card renders BEFORE the confirm button appears
+  - Never create a ticket without showing the preview first (INV-IAM-01)
+  - Error state renders inline below the form (not an alert/toast)
+
+---
+
+Create frontend/src/components/AssetInventory.tsx.
+
+Props: projectId: string
+
+Fetches GET /iam/inventory?project_id={projectId} on mount.
+Renders a table with exactly these columns: Identity | Role/Status | Project
+
+Rules:
+  - Any null/undefined field renders "—" (em-dash) — INV-IAM-03
+  - Loading state: "Loading inventory..." text
+  - Empty state: "No IAM bindings found for this project."
+  - Error state: "Failed to load inventory."
+
+---
+
+Update frontend/src/pages/IAMPage.tsx to render both components:
+  Top: IAMPanel (access request)
+  Bottom: AssetInventory (current bindings)
+  Use the project_id from a hardcoded config constant for the hackathon:
+    const PROJECT_ID = "nexus-tech-dev-sandbox"
+```
+
+**Test cases:**
+```typescript
+test('synthesize button disabled when fields empty', () => {
+  render(<IAMPanel />)
+  expect(screen.getByRole('button', {name:/synthesize/i})).toBeDisabled()
+})
+
+test('preview card appears after synthesis before confirm button', async () => {
+  // mock POST /iam/request to return a plan
+  render(<IAMPanel />)
+  fireEvent.change(screen.getByPlaceholderText(/request/i), {target:{value:'give alice read access'}})
+  fireEvent.change(screen.getByPlaceholderText(/email/i), {target:{value:'alice@x.com'}})
+  fireEvent.click(screen.getByRole('button', {name:/synthesize/i}))
+  await screen.findByText(/roles\//i)  // role appears in preview
+  expect(screen.getByRole('button', {name:/confirm/i})).toBeInTheDocument()
+})
+
+test('asset inventory renders three required columns', () => {
+  render(<AssetInventory projectId="nexus-tech-dev-1" />)
+  expect(screen.getByText('Identity')).toBeInTheDocument()
+  expect(screen.getByText('Role/Status')).toBeInTheDocument()
+  expect(screen.getByText('Project')).toBeInTheDocument()
+})
+
+test('null field in inventory renders em-dash', async () => {
+  // mock returns a binding with role=null
+  render(<AssetInventory projectId="nexus-tech-dev-1" />)
+  await screen.findAllByText('—')
+})
+```
+
+**Verification command:**
+```bash
+cd frontend && npm test -- --testPathPattern="IAMPanel|AssetInventory" --watchAll=false
+```
+
+**Invariants touched:** INV-IAM-01 (preview before confirm — enforced by UI flow), INV-IAM-03 (em-dash for null fields — tested).
+
+**Commit:** `git add -A && git commit -m "Task 10.6: IAM Panel and Asset Inventory components"`
+
+---
+
+## Task 10.7 — Cost Center: project spend and user spend panels
+
+**What this builds:** `CostCenter.tsx` with two views: project total (with attributed/
+unattributed breakdown) and user spend search (email + project query).
+
+**CC prompt:**
+```
+Create frontend/src/components/CostCenter.tsx.
+
+Two tabs: "Project Spend" and "User Spending"
+
+--- Tab 1: Project Spend ---
+On mount: GET /cost/project/{PROJECT_ID}
+Renders:
+  - Total: "$X/month"
+  - Attributed: "$Y/month"
+  - Unattributed: "$Z/month"
+  - Breakdown table: Owner Email | Monthly Cost
+    The "unattributed" row must always appear if unattributed_usd > 0.
+    It renders as "Unattributed resources" in the Owner Email column.
+  - Loading / error states
+
+--- Tab 2: User Spending ---
+Search form: email input + project input (pre-filled with PROJECT_ID)
+On submit: GET /cost/user?owner_email=X&project_id=Y
+Renders:
+  - "Total: $X/month across N resources"
+  - Resources table: Resource ID | Type | Monthly Cost
+  - If no records: "No spend found for this user in this project."
+  - Error: "Failed to load user spending."
+```
+
+**Test cases:**
+```typescript
+test('project spend shows attributed and unattributed rows', async () => {
+  // mock GET /cost/project/... returns breakdown with unattributed entry
+  render(<CostCenter />)
+  await screen.findByText(/Unattributed/)
+  expect(screen.getByText(/Attributed/i)).toBeInTheDocument()
+})
+
+test('user spend search submits with email and project', async () => {
+  const fetchMock = jest.fn().mockResolvedValue({
+    ok: true, json: async () => ({total_usd: 45.0, resource_count: 2, resources: []})
+  })
+  global.fetch = fetchMock
+  render(<CostCenter />)
+  fireEvent.click(screen.getByText('User Spending'))
+  fireEvent.change(screen.getByPlaceholderText(/email/i), {target:{value:'alice@x.com'}})
+  fireEvent.click(screen.getByRole('button', {name:/search/i}))
+  await screen.findByText(/\$45/)
+  expect(fetchMock).toHaveBeenCalledWith(
+    expect.stringContaining('alice@x.com'), expect.anything()
+  )
+})
+```
+
+**Verification command:**
+```bash
+cd frontend && npm test -- --testPathPattern=CostCenter --watchAll=false
+```
+
+**Invariants touched:** INV-COST-01 (unattributed row visible in UI — tested).
+
+**Commit:** `git add -A && git commit -m "Task 10.7: Cost Center components"`
+
+---
+
+## Task 10.8 — Security Hub: flags table, budget status, report download
+
+**What this builds:** `SecurityHub.tsx` with three sections: active flags, budget
+status bar, and audit report download button.
+
+**CC prompt:**
+```
+Create frontend/src/components/SecurityHub.tsx.
+
+Three sections rendered vertically:
+
+--- Section 1: Security Flags ---
+GET /security/flags?project_id={PROJECT_ID} on mount.
+Table: Flag Type | Resource/Identity | Detected | Detail
+Badge colours:
+  OVER_PERMISSIONED → red badge
+  GHOST_RESOURCE → amber badge
+  BUDGET_BREACH → red badge
+Empty state: "No active security flags."
+
+--- Section 2: Budget Status ---
+GET /security/budget-status?project_id={PROJECT_ID} on mount.
+Shows:
+  - Progress bar: current_month_usd / threshold_usd (0–100%)
+  - "$X of $Y threshold used (Z%)"
+  - If breached: red progress bar + "Budget threshold exceeded"
+  - If not breached: green/amber progress bar
+
+--- Section 3: Audit Report Download ---
+Button: "Download Audit Report (PDF)"
+On click: GET /security/report/download?project_id={PROJECT_ID}
+  Sets response as a Blob, triggers browser download with filename
+  "cerberus-audit-{PROJECT_ID}-{date}.pdf"
+Loading state on button during fetch.
+If fetch fails: show "Report generation failed. Try again."
+
+Do not open the PDF in a new tab — trigger a file download.
+```
+
+**Test cases:**
+```typescript
+test('flags table renders required columns', () => {
+  render(<SecurityHub />)
+  expect(screen.getByText('Flag Type')).toBeInTheDocument()
+  expect(screen.getByText('Resource/Identity')).toBeInTheDocument()
+  expect(screen.getByText('Detected')).toBeInTheDocument()
+})
+
+test('budget bar shows breach state', async () => {
+  // mock budget-status returns breached=true
+  render(<SecurityHub />)
+  await screen.findByText(/exceeded/i)
+})
+
+test('download button triggers fetch to report endpoint', async () => {
+  const fetchMock = jest.fn().mockResolvedValue({
+    ok: true,
+    blob: async () => new Blob(['%PDF'], {type: 'application/pdf'})
+  })
+  global.fetch = fetchMock
+  render(<SecurityHub />)
+  fireEvent.click(screen.getByRole('button', {name:/download/i}))
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining('/security/report/download'), expect.anything()
+    )
+  })
+})
+```
+
+**Verification command:**
+```bash
+cd frontend && npm test -- --testPathPattern=SecurityHub --watchAll=false
+```
+
+**Invariants touched:** INV-SEC2-02 (budget breach visible in UI), INV-SEC2-03 (PDF download, not new tab).
+
+**Commit:** `git add -A && git commit -m "Task 10.8: Security Hub components"`
+
+---
+
+## Task 10.9 — Ticket Panel: pending approvals with dry-run preview
+
+**What this builds:** `TicketPanel.tsx` — admin-only view showing pending IAM tickets
+with dry-run preview before live provisioning.
+
+**CC prompt:**
+```
+Create frontend/src/components/TicketPanel.tsx.
+
+GET /tickets on mount. Renders list of pending tickets.
+
+For each ticket:
+  Card showing:
+    Requester: {plan.requester_email}
+    Requested role: {plan.role}
+    Project: {plan.project_id}
+    Justification: {plan.justification}
+    Submitted: {created_at}
+    Status badge: pending (amber) / approved (green) / rejected (red)
+
+  Two buttons (only for pending tickets):
+    "Preview" → POST /tickets/{id}/approve → shows dry-run result in an
+                inline card BEFORE the "Provision Live" button appears.
+                Dry-run card shows: would_add text from response.
+    "Provision Live" → POST /tickets/{id}/provision → only appears AFTER
+                Preview has been clicked and dry-run result is shown.
+                Shows success: "IAM binding provisioned."
+
+  "Reject" button → sets UI status to rejected (client-side only for hackathon).
+
+Rules:
+  - "Provision Live" button must NEVER appear before "Preview" is clicked. (INV-IAM-02)
+  - An error from the provision call renders inline below the card.
+  - Tickets table must not auto-refresh — manual refresh button only.
+```
+
+**Test cases:**
+```typescript
+test('provision live button not visible before preview', () => {
+  render(<TicketPanel />)
+  expect(screen.queryByRole('button', {name:/provision live/i})).not.toBeInTheDocument()
+})
+
+test('provision live appears after preview is clicked', async () => {
+  // mock POST /tickets/t1/approve returns dry_run result
+  render(<TicketPanel tickets={[makePendingTicket('t1')]} />)
+  fireEvent.click(screen.getByRole('button', {name:/preview/i}))
+  await screen.findByText(/would_add|DRY_RUN/i)
+  expect(screen.getByRole('button', {name:/provision live/i})).toBeInTheDocument()
+})
+
+test('pending ticket shows amber badge', () => {
+  render(<TicketPanel tickets={[makePendingTicket('t1')]} />)
+  const badge = screen.getByText('pending')
+  expect(badge.className).toMatch(/amber|yellow|warning/i)
+})
+```
+
+**Verification command:**
+```bash
+cd frontend && npm test -- --testPathPattern=TicketPanel --watchAll=false
+```
+
+**Invariants touched:** INV-IAM-02 (Provision Live gated behind Preview — tested explicitly).
+
+**Code review:**
+- [ ] "Provision Live" button is rendered inside a conditional that checks whether dry-run result exists in state — not just hidden with CSS
+
+**Commit:** `git add -A && git commit -m "Task 10.9: Ticket Panel with dry-run preview gate"`
+
+---
+
+## Task 10.10 — Session integration check and live smoke test
+
+**What this builds:** Nothing new — verifies the assembled system end to end.
+
+**Run the integration check command** (from the top of this document).
+
+**Additional smoke tests:**
+
+```bash
+# 1. IAM synthesis round-trip (requires .env with GEMINI_API_KEY)
+python3 -c "
+import asyncio
+from cerberus.heads.iam_head import synthesize_iam_request, create_ticket
+from cerberus.models.iam_ticket import IAMRequest
+from cerberus.config import get_config
+
+req = IAMRequest(
+    natural_language_request='Alice needs read access to BigQuery in the dev project',
+    requester_email='alice@nexus-tech.com',
+    project_id='nexus-tech-dev-sandbox'
+)
+plan = asyncio.run(synthesize_iam_request(req, get_config()))
+print(f'Synthesized role: {plan.role}')
+assert 'bigquery' in plan.role.lower() or 'viewer' in plan.role.lower(), \
+    f'Expected BigQuery role, got: {plan.role}'
+ticket = create_ticket(plan)
+print(f'Ticket created: {ticket.ticket_id} status={ticket.status}')
+print('IAM round-trip: PASS')
+"
+
+# 2. PDF generation
+python3 -c "
+from cerberus.services.pdf_report import generate_audit_report
+pdf = generate_audit_report('nexus-tech-dev-sandbox', {
+    'report_timestamp': '2026-03-31T10:00:00Z',
+    'project_id': 'nexus-tech-dev-sandbox',
+    'resources_scanned': 6,
+    'iam_changes': [],
+    'security_flags': [],
+    'idle_resources': []
+})
+assert pdf[:4] == b'%PDF', 'Not a valid PDF'
+open('/tmp/cerberus_test_report.pdf', 'wb').write(pdf)
+print(f'PDF: {len(pdf)} bytes — PASS')
+print('Open /tmp/cerberus_test_report.pdf to visually verify')
+"
+
+# 3. Frontend builds
+cd frontend && npm run build && echo "Frontend build: PASS" && cd ..
+
+# 4. Full test suite — no regressions
+pytest tests/ -v --tb=short 2>&1 | tail -20
+```
+
+**Commit:** `git add -A && git commit -m "Session 10: close — integration check passed"`
+
+**Verification command:**
+```bash
+pytest tests/test_iam_head.py tests/test_cost_head.py \
+       tests/test_security_head.py tests/test_routes.py \
+       tests/test_pdf_report.py -v
+```
+
+**Invariants touched:** All INV-IAM-*, INV-COST-*, INV-SEC2-* invariants verified end to end.
+
+---
+
+## PR Description Template
+
+```
+## Session 10 — Three-Head Expansion
+
+### What this delivers
+
+**IAM Head**
+- Natural language → Gemini synthesis → structured IAM plan → ticket
+- Ticket lifecycle: pending → approved → provisioned (dry-run first)
+- Asset inventory: live GCP IAM bindings per project
+
+**Cost Head**
+- Per-project spend from ChromaDB (attributed + unattributed split)
+- Per-user spend query (email + project)
+- No live Billing API calls at query time
+
+**Security Head**
+- Over-permissioning flags: owner/editor + 30-day inactivity
+- Ghost resource flags from ChromaDB scan history
+- Budget breach detection and JSONL audit entry
+- PDF audit report (reportlab, no network required)
+
+**UI — Slide Nav with 5 pages**
+- Dashboard, IAM Center, Cost Center, Security Hub, Tickets
+- IAM Panel: synthesis flow with preview-before-confirm gate
+- Asset Inventory: IAM bindings table
+- Cost Center: project spend + user spend search
+- Security Hub: flags, budget bar, PDF download
+- Ticket Panel: dry-run preview gate before Provision Live
+
+### Claude.md
+- Upgraded from v1.0 to v2.0
+- All v1.0 invariants unchanged
+- New invariants: INV-IAM-01/02/03, INV-COST-01/02, INV-SEC2-01/02/03
+
+### New invariants verified
+- INV-IAM-01: synthesis always before ticket creation — code review ✓
+- INV-IAM-02: Provision Live gated behind dry-run preview — test ✓
+- INV-IAM-03: em-dash for null IAM fields — test ✓
+- INV-COST-01: unattributed row always present — test ✓
+- INV-COST-02: no live Billing API in cost_head.py — grep ✓
+- INV-SEC2-01: two-condition over-permissioning check — code review ✓
+- INV-SEC2-02: budget alert written to JSONL — code review ✓
+- INV-SEC2-03: reportlab only, no network in pdf_report.py — test ✓
+
+### Regression check
+All Sessions 1–8 tests: PASS (no regressions)
+
+### Deviations
+[paste from SESSION_LOG.md or "None"]
+```
+-e 
+
+---
+
+
+# SESSION_LOG.md
+
+## Session: Session 10 — Three-Head Expansion
+**Date started:**
+**Engineer:**
+**Branch:** session/s10_three_heads
+**Claude.md version:** v2.0 · FROZEN · 2026-03-31
+**Status:** In Progress
+
+---
+
+## Tasks
+
+| Task Id | Task Name | Status | Commit |
+|---------|-----------|--------|--------|
+| 10.1 | Backend models, head skeletons, and new routes registration | | |
+| 10.2 | IAM Head — Gemini synthesis, ticket lifecycle, asset inventory | | |
+| 10.3 | Cost Head — per-project and per-user spend from ChromaDB | | |
+| 10.4 | Security Head — flags, budget alerts, PDF report | | |
+| 10.5 | SlideNav and page shells — Dashboard, IAM, Cost, Security, Tickets | | |
+| 10.6 | IAM Panel — access request form and asset inventory table | | |
+| 10.7 | Cost Center — project spend and user spend panels | | |
+| 10.8 | Security Hub — flags table, budget status, report download | | |
+| 10.9 | Ticket Panel — pending approvals with dry-run preview | | |
+| 10.10 | Session integration check and live smoke test | | |
+
+---
+
+## Decision Log
+
+| Task | Decision made | Rationale |
+|------|---------------|-----------|
+| | | |
+
+---
+
+## Deviations
+
+| Task | Deviation observed | Action taken |
+|------|--------------------|--------------|
+| | | |
+
+---
+
+## Claude.md Changes
+
+| Change | Reason | New Claude.md version | Tasks re-verified |
+|--------|--------|-----------------------|-------------------|
+| v1.0 → v2.0 | Session 10 scope expansion: three-head UI, IAM workflow, cost attribution, security flags, PDF report | v2.0 · 2026-03-31 | All Session 10 tasks use v2.0 |
+
+---
+
+## Session Completion
+**Session integration check:** [ ] PASSED
+**All tasks verified:** [ ] Yes
+**PR raised:** [ ] Yes — PR #: session/s10_three_heads → main
+**Status updated to:**
+**Engineer sign-off:**
+-e 
+
+---
+
+
+# VERIFICATION_RECORD.md
+
+**Session:** Session 10 — Three-Head Expansion
+**Date:**
+**Engineer:**
+
+---
+
+## Task 10.1 — Backend models, head skeletons, route registration
+
+### Test Cases Applied
+Source: SESSION_10_BUILD_GUIDE.md Task 10.1
+
+| Case | Scenario | Expected | Result |
+|------|----------|----------|--------|
+| TC-1 | GET /iam/inventory route | Status code is not 404 | |
+| TC-2 | GET /cost/project/{id} route | Status code is not 404 | |
+| TC-3 | GET /security/flags route | Status code is not 404 | |
+| TC-4 | GET /tickets route | Status code is not 404 | |
+| TC-5 | GET /run/nonexistent-id/status (existing route) | Status code is 404 — not 500 | |
+| TC-6 | IAMTicket model created with valid data | Object created, status == "pending" | |
+| TC-7 | SecurityFlag with invalid flag_type | Exception raised — Literal enforced | |
+
+### Prediction Statement
+
+### CC Challenge Output
+
+### Code Review
+**INV-IAM-01, INV-IAM-03, INV-COST-01, INV-SEC2-03 touched.**
+
+- [ ] No existing route in `api.py` is modified — only `include_router` calls added
+- [ ] `IAMTicket.status` is a `Literal` with exactly 4 values: pending/approved/rejected/provisioned
+- [ ] `SecurityFlag.flag_type` is a `Literal` with exactly 3 values: OVER_PERMISSIONED/GHOST_RESOURCE/BUDGET_BREACH
+- [ ] `ProjectCostSummary` has both `attributed_usd` AND `unattributed_usd` fields
+
+### Scope Decisions
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] CC challenge reviewed
+[ ] Code review complete
+[ ] Scope decisions documented
+
+**Status:**
+
+---
+
+## Task 10.2 — IAM Head: Gemini synthesis, ticket lifecycle, asset inventory
+
+### Test Cases Applied
+Source: SESSION_10_BUILD_GUIDE.md Task 10.2
+
+| Case | Scenario | Expected | Result |
+|------|----------|----------|--------|
+| TC-1 | `synthesize_iam_request` called with valid request | Returns `SynthesizedIAMPlan`; Gemini called with temperature=0 | |
+| TC-2 | `create_ticket` called with a plan | Ticket stored in `_tickets`, status == "pending" | |
+| TC-3 | `approve_ticket` called on pending ticket | status == "approved", reviewed_by set | |
+| TC-4 | `provision_iam_binding` with `dry_run=True` | Returns dict with `status == "DRY_RUN"` and `would_add` key | |
+| TC-5 | `get_pending_tickets` after one approval | Approved ticket not in result; pending ticket is in result | |
+| TC-6 | `get_iam_inventory` called with valid project | Returns list of `IAMBinding`; each has identity, role, project_id | |
+
+### Prediction Statement
+
+### CC Challenge Output
+
+### Code Review
+**INV-IAM-01, INV-IAM-02, INV-IAM-03 touched.**
+
+- [ ] `synthesize_iam_request` calls Gemini at `temperature=0` — confirm line number: ___
+- [ ] `provision_iam_binding` defaults `dry_run=True` — no live call without explicit False
+- [ ] Route `POST /tickets/{id}/provision` checks `ticket.status == "approved"` before calling provision
+- [ ] `get_iam_inventory` wraps GCP call in `gcp_call_with_retry`
+
+### Scope Decisions
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] CC challenge reviewed
+[ ] Code review complete (INV-IAM-01, INV-IAM-02, INV-IAM-03)
+[ ] Scope decisions documented
+
+**Status:**
+
+---
+
+## Task 10.3 — Cost Head: per-project and per-user spend from ChromaDB
+
+### Test Cases Applied
+Source: SESSION_10_BUILD_GUIDE.md Task 10.3
+
+| Case | Scenario | Expected | Result |
+|------|----------|----------|--------|
+| TC-1 | 2 attributed + 1 unattributed resource in ChromaDB | `total_usd=85`, `attributed_usd=75`, `unattributed_usd=10` | |
+| TC-2 | `attributed_usd + unattributed_usd == total_usd` | Difference < 0.01 for any seed data | |
+| TC-3 | Breakdown list for project with unattributed resources | `breakdown` contains entry with `owner_email=="unattributed"` | |
+| TC-4 | `get_user_cost_summary("alice@x.com", "p")` with 2 alice resources | `total_usd==65`, `resource_count==2` | |
+| TC-5 | `get_user_cost_summary` for unknown email | `total_usd==0.0`, `resources==[]` | |
+| TC-6 | ChromaDB raises exception during project cost query | Returns `ProjectCostSummary` with all zeros — does not raise | |
+
+### Prediction Statement
+
+### CC Challenge Output
+
+### Code Review
+**INV-COST-01, INV-COST-02 touched.**
+
+- [ ] No `google-cloud-billing` or `cloudbilling` import in `cost_head.py`: `grep -n "billing" cerberus/heads/cost_head.py` — expected: no output
+- [ ] `unattributed` resources appear in `breakdown` list — not filtered out
+- [ ] `attributed_usd + unattributed_usd == total_usd` — verify arithmetic logic line by line
+
+### Scope Decisions
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] CC challenge reviewed
+[ ] Code review complete (INV-COST-01, INV-COST-02)
+[ ] Scope decisions documented
+
+**Status:**
+
+---
+
+## Task 10.4 — Security Head: flags, budget alerts, PDF report
+
+### Test Cases Applied
+Source: SESSION_10_BUILD_GUIDE.md Task 10.4
+
+| Case | Scenario | Expected | Result |
+|------|----------|----------|--------|
+| TC-1 | IAM has owner with 35-day inactivity | `OVER_PERMISSIONED` flag raised; detail mentions inactivity | |
+| TC-2 | ChromaDB has resources with `decision="safe_to_stop"` | `GHOST_RESOURCE` flag raised | |
+| TC-3 | Project spend exceeds `budget_alert_threshold_usd` | `BUDGET_BREACH` flag raised | |
+| TC-4 | Project spend below threshold | No `BUDGET_BREACH` flag | |
+| TC-5 | `generate_audit_report(project_id, {})` | Returns bytes; `len > 1000`; first 4 bytes == `b"%PDF"` | |
+| TC-6 | `generate_audit_report` with network patched to raise | Returns valid PDF bytes — no network required | |
+
+### Prediction Statement
+
+### CC Challenge Output
+
+### Code Review
+**INV-SEC2-01, INV-SEC2-02, INV-SEC2-03 touched.**
+
+- [ ] `get_security_flags` CHECK 1 verifies BOTH role AND inactivity — not one alone; find the `and` condition in code: line ___
+- [ ] Budget breach flag calls `write_audit_entry` with `action_type="BUDGET_ALERT"` — confirm: line ___
+- [ ] `pdf_report.py` imports: `grep -n "^import\|^from" cerberus/services/pdf_report.py` — only `reportlab`, `io`, stdlib allowed
+- [ ] No `requests`, `httpx`, `urllib`, or socket calls in `pdf_report.py`
+
+### Scope Decisions
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] CC challenge reviewed
+[ ] Code review complete (INV-SEC2-01, INV-SEC2-02, INV-SEC2-03)
+[ ] Scope decisions documented
+
+**Status:**
+
+---
+
+## Task 10.5 — SlideNav and page shells
+
+### Test Cases Applied
+Source: SESSION_10_BUILD_GUIDE.md Task 10.5
+
+| Case | Scenario | Expected | Result |
+|------|----------|----------|--------|
+| TC-1 | `SlideNav` rendered with `currentPage="/"` | All 5 nav item labels present in DOM | |
+| TC-2 | `SlideNav` rendered with `currentPage="/iam"` | IAM Center item has active/highlight class | |
+| TC-3 | Click "Cost Center" nav item | `onNavigate` called with `"/cost"` | |
+
+### Prediction Statement
+
+### CC Challenge Output
+
+### Code Review
+**INV-UI-01 (layout must not break existing components).**
+
+- [ ] No React Router import: `grep -r "react-router" frontend/src/` — expected: no output
+- [ ] `position: fixed` not in SlideNav: `grep -n "fixed" frontend/src/components/SlideNav.tsx` — expected: no result or only Tailwind flex classes
+- [ ] `ApprovalTable.tsx` unchanged: `git diff main -- frontend/src/components/ApprovalTable.tsx` — expected: no diff
+- [ ] All 5 page shells render without crashing: `cd frontend && npm run build`
+
+### Scope Decisions
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] CC challenge reviewed
+[ ] Code review complete
+[ ] Scope decisions documented
+
+**Status:**
+
+---
+
+## Task 10.6 — IAM Panel and Asset Inventory
+
+### Test Cases Applied
+Source: SESSION_10_BUILD_GUIDE.md Task 10.6
+
+| Case | Scenario | Expected | Result |
+|------|----------|----------|--------|
+| TC-1 | `IAMPanel` rendered with empty fields | "Synthesize" button is disabled | |
+| TC-2 | Fields filled + mock synthesis response | Preview card shows role; Confirm button appears | |
+| TC-3 | `AssetInventory` rendered | "Identity", "Role/Status", "Project" column headers present | |
+| TC-4 | Mock returns binding with `role=null` | Cell renders "—" not blank or "null" | |
+
+### Prediction Statement
+
+### CC Challenge Output
+
+### Code Review
+**INV-IAM-01, INV-IAM-03 touched.**
+
+- [ ] "Confirm & Create Ticket" button only renders after `synthesizedPlan` is non-null in state
+- [ ] em-dash fallback: `record.identity ?? "—"` or equivalent pattern for all three fields
+
+### Scope Decisions
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] CC challenge reviewed
+[ ] Code review complete (INV-IAM-01, INV-IAM-03)
+[ ] Scope decisions documented
+
+**Status:**
+
+---
+
+## Task 10.7 — Cost Center
+
+### Test Cases Applied
+Source: SESSION_10_BUILD_GUIDE.md Task 10.7
+
+| Case | Scenario | Expected | Result |
+|------|----------|----------|--------|
+| TC-1 | Mock returns breakdown with unattributed entry | "Unattributed" text visible in DOM | |
+| TC-2 | User spend search submitted with email | Fetch called with `alice@x.com` in URL; total rendered | |
+
+### Prediction Statement
+
+### CC Challenge Output
+
+### Code Review
+**INV-COST-01 touched.**
+
+- [ ] "Unattributed" row appears when `unattributed_usd > 0` — confirm conditional renders it
+
+### Scope Decisions
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] CC challenge reviewed
+[ ] Code review complete (INV-COST-01)
+[ ] Scope decisions documented
+
+**Status:**
+
+---
+
+## Task 10.8 — Security Hub
+
+### Test Cases Applied
+Source: SESSION_10_BUILD_GUIDE.md Task 10.8
+
+| Case | Scenario | Expected | Result |
+|------|----------|----------|--------|
+| TC-1 | Component renders | "Flag Type", "Resource/Identity", "Detected" columns present | |
+| TC-2 | Mock returns `breached=true` | "exceeded" text visible | |
+| TC-3 | Download button clicked (mock PDF response) | Fetch called with `/security/report/download` URL | |
+
+### Prediction Statement
+
+### CC Challenge Output
+
+### Code Review
+**INV-SEC2-02, INV-SEC2-03 touched.**
+
+- [ ] PDF download triggers file download (not new tab) — confirm `URL.createObjectURL` + `<a>.click()` pattern
+- [ ] Budget breach alert visible without page reload
+
+### Scope Decisions
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] CC challenge reviewed
+[ ] Code review complete
+[ ] Scope decisions documented
+
+**Status:**
+
+---
+
+## Task 10.9 — Ticket Panel
+
+### Test Cases Applied
+Source: SESSION_10_BUILD_GUIDE.md Task 10.9
+
+| Case | Scenario | Expected | Result |
+|------|----------|----------|--------|
+| TC-1 | `TicketPanel` rendered with pending ticket | "Provision Live" button NOT in DOM | |
+| TC-2 | "Preview" clicked (mock dry-run response) | Dry-run result visible; "Provision Live" button appears | |
+| TC-3 | Pending ticket badge | Badge text "pending" has amber/yellow styling class | |
+
+### Prediction Statement
+
+### CC Challenge Output
+
+### Code Review
+**INV-IAM-02 touched — most critical review in this session.**
+
+- [ ] "Provision Live" button is inside a conditional on `dryRunResult !== null` in state — NOT just `display:none` or `visibility:hidden`
+- [ ] The route `POST /tickets/{id}/provision` on the backend checks `ticket.status == "approved"` before executing — confirm in `ticket_routes.py`
+
+### Scope Decisions
+
+### Verification Verdict
+[ ] All planned cases passed
+[ ] CC challenge reviewed
+[ ] Code review complete (INV-IAM-02)
+[ ] Scope decisions documented
+
+**Status:**
+
+---
+
+## Task 10.10 — Session Integration Check
+
+### What this verifies that individual tasks do not:
+All new routes respond correctly while existing routes remain unbroken.
+IAM synthesis calls real Gemini and returns a sensible role.
+PDF generates valid bytes without network access.
+Frontend builds with no TypeScript errors.
+All new tests pass alongside all Sessions 1–8 tests (no regressions).
+
+### Prediction Statement
+
+### Integration Check Result
+*(PASS / FAIL — fill after running all commands in Task 10.10)*
+
+### Regression Check
+*(Paste last 10 lines of `pytest tests/ -v --tb=short` output)*
+
+### Verification Verdict
+[ ] Integration check PASSED
+[ ] Regression check PASSED (no Sessions 1–8 failures)
+[ ] PDF visually inspected at /tmp/cerberus_test_report.pdf
+[ ] Frontend build succeeded
+
+**Status:**
 
 ## Invariant Coverage Matrix
 

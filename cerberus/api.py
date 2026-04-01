@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI
 from fastapi.responses import JSONResponse
@@ -21,6 +22,11 @@ app = FastAPI(title="Cerberus")
 # status values: "scanning" | "awaiting_approval" | "executing" | "complete" | "error"
 active_runs: dict[str, dict] = {}
 
+# In-memory IAM ticket store keyed by ticket_id.
+# Each entry: {"id", "ts", "plan", "status"}
+# status values: "pending" | "approved" | "rejected"
+iam_tickets: dict[str, dict] = {}
+
 
 # ---------------------------------------------------------------------------
 # Request / response models
@@ -34,6 +40,17 @@ class RunRequest(BaseModel):
 
 class ApproveRequest(BaseModel):
     approved_ids: list[str]
+
+
+class RunSummary(BaseModel):
+    run_id: str
+    resources_scanned: int
+    total_waste_identified: float | None
+    actions_approved: int
+    actions_executed: int
+    estimated_monthly_savings_recovered: float
+    audit_log_path: str | None
+    langsmith_trace_url: str | None
 
 
 # ---------------------------------------------------------------------------
@@ -244,3 +261,117 @@ async def get_status(run_id: str) -> JSONResponse:
             "mutation_count": final_state.get("mutation_count", 0),
         },
     )
+
+
+@app.get("/run/{run_id}/summary")
+async def get_summary(run_id: str) -> JSONResponse:
+    """Return COST_SUMMARY as JSON.
+
+    INV-SEC-02: no fields from CerberusConfig appear in the response.
+    Returns 404 if the run is not complete or the summary has not been written yet.
+    """
+    if run_id not in active_runs:
+        return JSONResponse(status_code=404, content={"error": "Run not found."})
+
+    final_state: dict = active_runs[run_id].get("final_state") or {}
+    cost_summary = final_state.get("cost_summary")
+
+    if not cost_summary:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Run not complete or summary not yet written."},
+        )
+
+    summary = RunSummary(
+        run_id=run_id,
+        resources_scanned=cost_summary.get("resources_scanned", 0),
+        total_waste_identified=cost_summary.get("total_waste_identified"),
+        actions_approved=cost_summary.get("actions_approved", 0),
+        actions_executed=cost_summary.get("actions_executed", 0),
+        estimated_monthly_savings_recovered=cost_summary.get(
+            "estimated_monthly_savings_recovered", 0.0
+        ),
+        audit_log_path=final_state.get("audit_log_path"),
+        langsmith_trace_url=final_state.get("langsmith_trace_url"),
+    )
+    return JSONResponse(status_code=200, content=summary.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# IAM Access Head endpoint (Task 9.1 UI)
+# ---------------------------------------------------------------------------
+
+
+class IamSynthesizeRequest(BaseModel):
+    requester_email: str
+    request_text: str
+    project_id: str
+
+
+@app.post("/iam/synthesize")
+async def post_iam_synthesize(req: IamSynthesizeRequest) -> JSONResponse:
+    """Synthesize a least-privilege IAM provisioning plan from a natural-language request.
+
+    INV-SEC-01: project_id is validated before any Gemini call.
+    INV-SEC-02: no credential fields in response.
+    """
+    from cerberus.nodes.access_node import synthesize_iam_request, IamRequest
+    try:
+        plan = synthesize_iam_request(
+            IamRequest(
+                requester_email=req.requester_email,
+                request_text=req.request_text,
+                project_id=req.project_id,
+            )
+        )
+        return JSONResponse(status_code=200, content=plan.model_dump())
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    except Exception as exc:
+        logger.exception("IAM synthesis failed")
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+# ---------------------------------------------------------------------------
+# IAM Ticket endpoints (Cerberus Admin ticket queue)
+# ---------------------------------------------------------------------------
+
+
+class IamTicketCreate(BaseModel):
+    plan: dict
+
+
+class IamTicketReview(BaseModel):
+    action: str  # "approved" | "rejected"
+
+
+@app.post("/iam/tickets")
+async def post_iam_ticket(req: IamTicketCreate) -> JSONResponse:
+    """Create a new IAM ticket from a synthesized plan submitted for admin approval."""
+    ticket_id = str(uuid.uuid4())
+    iam_tickets[ticket_id] = {
+        "id": ticket_id,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "plan": req.plan,
+        "status": "pending",
+    }
+    logger.info("IAM ticket %s created for requester %s", ticket_id, req.plan.get("requester_email"))
+    return JSONResponse(status_code=200, content={"id": ticket_id})
+
+
+@app.get("/iam/tickets")
+async def get_iam_tickets() -> JSONResponse:
+    """List all IAM tickets (pending, approved, rejected)."""
+    return JSONResponse(status_code=200, content=list(iam_tickets.values()))
+
+
+@app.post("/iam/tickets/{ticket_id}/review")
+async def post_iam_ticket_review(ticket_id: str, req: IamTicketReview) -> JSONResponse:
+    """Approve or reject an IAM ticket."""
+    if ticket_id not in iam_tickets:
+        return JSONResponse(status_code=404, content={"error": "Ticket not found."})
+    if req.action not in ("approved", "rejected"):
+        return JSONResponse(status_code=400, content={"error": "action must be 'approved' or 'rejected'"})
+    iam_tickets[ticket_id]["status"] = req.action
+    logger.info("IAM ticket %s %s", ticket_id, req.action)
+    return JSONResponse(status_code=200, content={"status": req.action})

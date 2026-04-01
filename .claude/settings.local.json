@@ -3,7 +3,9 @@
     "allow": [
       "Bash(uv sync:*)",
       "Bash(venv/Scripts/python -m pytest tests/test_foundation.py -v)",
-      "Bash(venv/Scripts/python -m pytest tests/test_foundation.py -v --tb=short)"
+      "Bash(venv/Scripts/python -m pytest tests/test_foundation.py -v --tb=short)",
+      "Bash(python -m pip show langgraph)",
+      "Bash(python -c \"import scripts.run_demo_smoke_test; print\\(''Import OK''\\)\")"
     ]
   }
 }
