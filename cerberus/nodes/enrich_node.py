@@ -6,6 +6,7 @@ from typing import Any
 
 from google.cloud import asset_v1, logging_v2, resourcemanager_v3
 from google.oauth2 import service_account
+from google.api_core.exceptions import Forbidden
 
 from cerberus.config import get_config
 from cerberus.state import CerberusState
@@ -62,8 +63,8 @@ def lookup_by_asset_inventory(
 
     try:
         return gcp_call_with_retry(_search)
-    except CerberusRetryExhausted as e:
-        logger.warning("lookup_by_asset_inventory failed for %s: %s", resource_id, e)
+    except (CerberusRetryExhausted, Forbidden) as e:
+        logger.warning("lookup_by_asset_inventory failed (likely API disabled) for %s: %s", resource_id, e)
         return None
 
 
@@ -94,8 +95,8 @@ def lookup_by_iam_history(
 
     try:
         return gcp_call_with_retry(_query)
-    except CerberusRetryExhausted as e:
-        logger.warning("lookup_by_iam_history failed for %s: %s", resource_id, e)
+    except (CerberusRetryExhausted, Forbidden) as e:
+        logger.warning("lookup_by_iam_history failed (likely API disabled) for %s: %s", resource_id, e)
         return None
 
 
@@ -123,8 +124,8 @@ def lookup_by_audit_log(
 
     try:
         return gcp_call_with_retry(_query)
-    except CerberusRetryExhausted as e:
-        logger.warning("lookup_by_audit_log failed for %s: %s", resource_id, e)
+    except (CerberusRetryExhausted, Forbidden) as e:
+        logger.warning("lookup_by_audit_log failed (likely API disabled) for %s: %s", resource_id, e)
         return None
 
 

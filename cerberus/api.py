@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -12,10 +11,18 @@ from pydantic import BaseModel
 from cerberus.config import get_config, validate_project_id
 from cerberus.graph import cerberus_graph
 from cerberus.state import initialise_state, CerberusState
+from cerberus.routes.iam_routes import router as iam_router
+from cerberus.routes.cost_routes import router as cost_router
+from cerberus.routes.security_routes import router as security_router
+from cerberus.routes.ticket_routes import router as ticket_router
 
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Cerberus")
+app.include_router(iam_router)
+app.include_router(cost_router)
+app.include_router(security_router)
+app.include_router(ticket_router)
 
 # In-memory store keyed by run_id.
 # Each entry: {"thread_id", "project_id", "status", "approval_payload", "final_state", "error_message"}
@@ -58,6 +65,126 @@ class RunSummary(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+_TRACED_NODES = frozenset({
+    "scan_node", "enrich_node", "reason_node",
+    "revalidate_node", "approve_node", "execute_node", "audit_node",
+})
+
+_NODE_ICONS = {
+    "scan_node":       "🔍",
+    "enrich_node":     "🏷️",
+    "reason_node":     "🧠",
+    "revalidate_node": "🔄",
+    "approve_node":    "✅",
+    "execute_node":    "⚡",
+    "audit_node":      "📋",
+}
+
+_NODE_COLORS = {
+    "scan_node":       "#1f77b4",
+    "enrich_node":     "#7b1fa2",
+    "reason_node":     "#ff9800",
+    "revalidate_node": "#00838f",
+    "approve_node":    "#4caf50",
+    "execute_node":    "#f44336",
+    "audit_node":      "#607d8b",
+}
+
+
+def _process_trace_event(run_id: str, event: dict) -> None:
+    if run_id not in active_runs:
+        return
+    event_type: str = event.get("event", "")
+    name: str = event.get("name", "")
+
+    if event_type == "on_chain_start" and name in _TRACED_NODES:
+        active_runs[run_id]["trace_events"].append({
+            "type": "node_start",
+            "node": name,
+            "icon": _NODE_ICONS.get(name, "▶"),
+            "color": _NODE_COLORS.get(name, "#495057"),
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "message": f"{name.replace('_node', '').replace('_', ' ').title()} started",
+        })
+    elif event_type == "on_chain_end" and name in _TRACED_NODES:
+        output = event.get("data", {}).get("output") or {}
+        out = output if isinstance(output, dict) else {}
+        active_runs[run_id]["trace_events"].append({
+            "type": "node_end",
+            "node": name,
+            "icon": _NODE_ICONS.get(name, "✓"),
+            "color": _NODE_COLORS.get(name, "#495057"),
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "message": _summarize_node_output(name, out),
+            "detail": _node_detail(name, out),
+        })
+
+
+def _summarize_node_output(node: str, output: dict) -> str:
+    if node == "scan_node":
+        resources = output.get("resources", [])
+        count = len(resources) if isinstance(resources, list) else 0
+        return f"Scan complete — {count} resource(s) discovered"
+    if node == "enrich_node":
+        resources = output.get("resources", [])
+        if isinstance(resources, list):
+            owned = sum(1 for r in resources if isinstance(r, dict) and r.get("ownership_status") not in (None, "no_owner"))
+            return f"Enrichment complete — {owned}/{len(resources)} resources have an owner"
+        return "Enrichment complete"
+    if node == "reason_node":
+        resources = output.get("resources", [])
+        if isinstance(resources, list):
+            classified = sum(1 for r in resources if isinstance(r, dict) and r.get("decision"))
+            stop = sum(1 for r in resources if isinstance(r, dict) and r.get("decision") == "safe_to_stop")
+            delete = sum(1 for r in resources if isinstance(r, dict) and r.get("decision") == "safe_to_delete")
+            review = sum(1 for r in resources if isinstance(r, dict) and r.get("decision") == "needs_review")
+            return f"Gemini classified {classified} resource(s): {stop} stop · {delete} delete · {review} review"
+        return "Gemini classification complete"
+    if node == "revalidate_node":
+        drift = output.get("revalidation_drift", False)
+        return f"Revalidation complete — {'drift detected' if drift else 'no drift'}"
+    if node == "approve_node":
+        approved = output.get("approved_actions", [])
+        count = len(approved) if isinstance(approved, list) else 0
+        return f"Approval gate — {count} action(s) approved"
+    if node == "execute_node":
+        resources = output.get("resources", [])
+        if isinstance(resources, list):
+            success = sum(1 for r in resources if isinstance(r, dict) and r.get("outcome") == "SUCCESS")
+            dry = sum(1 for r in resources if isinstance(r, dict) and r.get("outcome") == "DRY_RUN")
+            return f"Execution complete — {success} success · {dry} dry-run"
+        return "Execution complete"
+    if node == "audit_node":
+        return "Audit log written — JSONL entries flushed to disk"
+    return f"{node} complete"
+
+
+def _node_detail(node: str, output: dict) -> list[dict]:
+    detail: list[dict] = []
+    if node == "reason_node":
+        for r in (output.get("resources") or []):
+            if not isinstance(r, dict):
+                continue
+            detail.append({
+                "resource_id": r.get("resource_id", "?"),
+                "resource_type": r.get("resource_type", "?"),
+                "decision": r.get("decision") or "—",
+                "reasoning": r.get("reasoning") or "—",
+                "savings": r.get("estimated_monthly_savings"),
+            })
+    if node == "execute_node":
+        for r in (output.get("resources") or []):
+            if not isinstance(r, dict) or not r.get("outcome"):
+                continue
+            detail.append({
+                "resource_id": r.get("resource_id", "?"),
+                "resource_type": r.get("resource_type", "?"),
+                "outcome": r.get("outcome") or "—",
+                "decision": r.get("decision") or "—",
+            })
+    return detail
+
+
 async def _run_graph_until_interrupt(
     run_id: str, state: CerberusState, thread_id: str
 ) -> None:
@@ -69,10 +196,10 @@ async def _run_graph_until_interrupt(
     """
     config = {"configurable": {"thread_id": thread_id}}
     try:
-        async for _event in cerberus_graph.astream_events(
+        async for event in cerberus_graph.astream_events(
             state, config=config, version="v2"
         ):
-            pass
+            _process_trace_event(run_id, event)
 
         graph_state = await cerberus_graph.aget_state(config)
 
@@ -129,10 +256,10 @@ async def _resume_graph(
         )
 
         # Resume from the interrupted point (approve_node).
-        async for _event in cerberus_graph.astream_events(
+        async for event in cerberus_graph.astream_events(
             None, config=config, version="v2"
         ):
-            pass
+            _process_trace_event(run_id, event)
 
         graph_state = await cerberus_graph.aget_state(config)
         active_runs[run_id]["final_state"] = dict(graph_state.values)
@@ -184,6 +311,7 @@ async def post_run(req: RunRequest, background_tasks: BackgroundTasks) -> JSONRe
         "approval_payload": None,
         "final_state": None,
         "error_message": None,
+        "trace_events": [],
     }
 
     state = initialise_state(req.project_id, dry_run=req.dry_run)
@@ -259,6 +387,28 @@ async def get_status(run_id: str) -> JSONResponse:
             "dry_run": final_state.get("dry_run", True),
             "langsmith_trace_url": final_state.get("langsmith_trace_url"),
             "mutation_count": final_state.get("mutation_count", 0),
+        },
+    )
+
+
+@app.get("/run/{run_id}/events")
+async def get_events(run_id: str, offset: int = 0) -> JSONResponse:
+    """Return agent trace events for a run (polled by the frontend).
+
+    offset: return only events starting at this index (incremental polling).
+    INV-SEC-02: no credential fields are included.
+    """
+    if run_id not in active_runs:
+        return JSONResponse(status_code=404, content={"error": "Run not found."})
+
+    events: list[dict] = active_runs[run_id].get("trace_events", [])
+    return JSONResponse(
+        status_code=200,
+        content={
+            "run_id": run_id,
+            "status": active_runs[run_id]["status"],
+            "total": len(events),
+            "events": events[offset:],
         },
     )
 
@@ -361,17 +511,42 @@ async def post_iam_ticket(req: IamTicketCreate) -> JSONResponse:
 
 @app.get("/iam/tickets")
 async def get_iam_tickets() -> JSONResponse:
-    """List all IAM tickets (pending, approved, rejected)."""
-    return JSONResponse(status_code=200, content=list(iam_tickets.values()))
+    """List all IAM tickets (pending, approved, rejected).
+
+    Reads from iam_head._tickets — the same store written by POST /iam/request.
+    Maps IAMTicket {ticket_id, created_at, plan, status} to the frontend shape
+    {id, ts, plan, status} that IamTicketResponse expects.
+    """
+    from cerberus.heads.iam_head import _tickets as _iam_tickets
+    items = []
+    for ticket in _iam_tickets.values():
+        items.append({
+            "id": ticket.ticket_id,
+            "ts": ticket.created_at,
+            "plan": ticket.plan.model_dump(),
+            "status": ticket.status,
+        })
+    return JSONResponse(status_code=200, content=items)
 
 
 @app.post("/iam/tickets/{ticket_id}/review")
 async def post_iam_ticket_review(ticket_id: str, req: IamTicketReview) -> JSONResponse:
-    """Approve or reject an IAM ticket."""
-    if ticket_id not in iam_tickets:
+    """Approve or reject an IAM ticket.
+
+    Reads from iam_head._tickets — the same store written by POST /iam/request.
+    """
+    from cerberus.heads.iam_head import _tickets as _iam_tickets, approve_ticket, reject_ticket
+    if ticket_id not in _iam_tickets:
         return JSONResponse(status_code=404, content={"error": "Ticket not found."})
     if req.action not in ("approved", "rejected"):
         return JSONResponse(status_code=400, content={"error": "action must be 'approved' or 'rejected'"})
-    iam_tickets[ticket_id]["status"] = req.action
-    logger.info("IAM ticket %s %s", ticket_id, req.action)
-    return JSONResponse(status_code=200, content={"status": req.action})
+    try:
+        if req.action == "approved":
+            ticket = await approve_ticket(ticket_id, reviewer_email="admin@cerberus")
+        else:
+            ticket = await reject_ticket(ticket_id, reviewer_email="admin@cerberus")
+        logger.info("IAM ticket %s %s", ticket_id, req.action)
+        return JSONResponse(status_code=200, content={"status": ticket.status})
+    except Exception as exc:
+        logger.exception("IAM ticket review failed for %s", ticket_id)
+        return JSONResponse(status_code=500, content={"error": str(exc)})

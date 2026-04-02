@@ -9,6 +9,9 @@ from dotenv import load_dotenv
 logger = logging.getLogger(__name__)
 
 
+BUDGET_ALERT_THRESHOLD_DEFAULT: float = 500.0
+
+
 @dataclass
 class CerberusConfig:
     gcp_project_id: str
@@ -21,6 +24,11 @@ class CerberusConfig:
     langsmith_project: str = "cerberus"
     chroma_persist_dir: str = "./chroma_db"
     audit_log_dir: str = "./logs"
+    budget_thresholds: dict = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.budget_thresholds is None:
+            self.budget_thresholds = {}
 
 
 _config: CerberusConfig | None = None
