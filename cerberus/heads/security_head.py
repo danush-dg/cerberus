@@ -203,10 +203,13 @@ async def get_security_flags(project_id: str, credentials) -> list[SecurityFlag]
 async def generate_audit_report_data(project_id: str, credentials=None) -> dict:
     """Assemble structured data for PDF generation — no GCP mutations."""
     from cerberus.heads.cost_head import get_project_cost_summary
+    from cerberus.heads.iam_head import _tickets, load_tickets_from_chroma
 
     security_flags: list[dict] = []
     iam_changes: list[dict] = []
     idle_resources: list[dict] = []
+    cost_summary: dict = {}
+    iam_tickets: list[dict] = []
 
     try:
         flags = await get_security_flags(project_id, credentials)
@@ -224,6 +227,27 @@ async def generate_audit_report_data(project_id: str, credentials=None) -> dict:
     except Exception as exc:
         logger.warning("generate_audit_report_data: IAM inventory failed: %s", exc)
 
+    try:
+        summary = await get_project_cost_summary(project_id)
+        cost_summary = {
+            "total_usd": summary.total_usd,
+            "attributed_usd": summary.attributed_usd,
+            "unattributed_usd": summary.unattributed_usd,
+            "breakdown": summary.breakdown,
+        }
+    except Exception as exc:
+        logger.warning("generate_audit_report_data: cost summary failed: %s", exc)
+
+    try:
+        load_tickets_from_chroma()
+        iam_tickets = [
+            t.model_dump()
+            for t in _tickets.values()
+            if t.plan.project_id == project_id
+        ]
+    except Exception as exc:
+        logger.warning("generate_audit_report_data: IAM tickets failed: %s", exc)
+
     resources_scanned = len(query_project_history(project_id))
 
     return {
@@ -234,4 +258,6 @@ async def generate_audit_report_data(project_id: str, credentials=None) -> dict:
         "iam_changes": iam_changes,
         "security_flags": security_flags,
         "idle_resources": idle_resources,
+        "cost_summary": cost_summary,
+        "iam_tickets": iam_tickets,
     }

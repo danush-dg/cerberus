@@ -4,7 +4,6 @@ import { ExecutePanel } from './components/ExecutePanel'
 import { IamPanel } from './components/IamPanel'
 import { CostCenter } from './components/CostCenter'
 import { SecurityHub } from './components/SecurityHub'
-import { AgentTrace } from './components/AgentTrace'
 import type { ResourceRow, RevalidationStatus, NavSection, IamTicket, SecurityAlert, IamPlan } from './types'
 import { MOCK_IDENTITY_DATA } from './types'
 import {
@@ -1229,11 +1228,7 @@ export default function App() {
         )}
       </main>
 
-      {/* ── Global Agent Trace drawer ───────────────────────────────────── */}
-      <AgentTrace
-        runId={runId}
-        active={phase === 'scanning' || phase === 'executing'}
-      />
+    
     </div>
   )
 }

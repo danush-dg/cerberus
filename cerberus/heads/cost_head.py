@@ -38,20 +38,25 @@ async def get_project_cost_summary(project_id: str) -> ProjectCostSummary:
     if unattributed_usd > 0:
         breakdown.append({"owner_email": "unattributed", "cost_usd": round(unattributed_usd, 4)})
 
-    resources: list[dict] = [
-        {
+    _actionable = {"safe_to_stop", "safe_to_delete"}
+    resources: list[dict] = []
+    ghost_resources: list[dict] = []
+    for rec in records:
+        decision = rec.get("decision") or "unknown"
+        entry = {
             "resource_id": rec.get("resource_id") or "unknown",
             "resource_type": rec.get("resource_type") or "unknown",
             "region": rec.get("region") or "—",
             "owner_email": rec.get("owner_email") or "unattributed",
             "ownership_status": rec.get("ownership_status") or "unknown",
-            "decision": rec.get("decision") or "unknown",
+            "decision": decision,
             "reasoning": rec.get("reasoning") or None,
             "estimated_monthly_cost": float(rec.get("estimated_monthly_cost") or 0.0),
             "estimated_monthly_savings": float(rec.get("estimated_monthly_savings") or 0.0),
         }
-        for rec in records
-    ]
+        resources.append(entry)
+        if decision in _actionable:
+            ghost_resources.append(entry)
 
     return ProjectCostSummary(
         project_id=project_id,
@@ -61,6 +66,7 @@ async def get_project_cost_summary(project_id: str) -> ProjectCostSummary:
         period="current_month",
         breakdown=breakdown,
         resources=resources,
+        ghost_resources=ghost_resources,
     )
 
 

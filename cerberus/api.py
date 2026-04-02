@@ -10,7 +10,7 @@ from pydantic import BaseModel
 
 from cerberus.config import get_config, validate_project_id
 from cerberus.graph import cerberus_graph
-from cerberus.state import initialise_state, CerberusState
+from cerberus.state import initialise_state, CerberusState, init_event_bus, drain_trace_events
 from cerberus.routes.iam_routes import router as iam_router
 from cerberus.routes.cost_routes import router as cost_router
 from cerberus.routes.security_routes import router as security_router
@@ -200,6 +200,8 @@ async def _run_graph_until_interrupt(
             state, config=config, version="v2"
         ):
             _process_trace_event(run_id, event)
+            for sub_ev in drain_trace_events(run_id):
+                active_runs[run_id]["trace_events"].append(sub_ev)
 
         graph_state = await cerberus_graph.aget_state(config)
 
@@ -260,6 +262,8 @@ async def _resume_graph(
             None, config=config, version="v2"
         ):
             _process_trace_event(run_id, event)
+            for sub_ev in drain_trace_events(run_id):
+                active_runs[run_id]["trace_events"].append(sub_ev)
 
         graph_state = await cerberus_graph.aget_state(config)
         active_runs[run_id]["final_state"] = dict(graph_state.values)
@@ -317,6 +321,7 @@ async def post_run(req: RunRequest, background_tasks: BackgroundTasks) -> JSONRe
     state = initialise_state(req.project_id, dry_run=req.dry_run)
     # Override the auto-generated run_id so it matches our tracking key.
     state["run_id"] = run_id
+    init_event_bus(run_id)
 
     background_tasks.add_task(_run_graph_until_interrupt, run_id, state, thread_id)
 
