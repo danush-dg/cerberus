@@ -54,12 +54,41 @@ export interface IamTicketResponse {
   id: string
   ts: string
   plan: Record<string, unknown>
-  status: 'pending' | 'approved' | 'rejected'
+  status: 'pending' | 'approved' | 'rejected' | 'provisioned'
 }
 
 export interface CostBreakdownRow {
   owner_email: string
   cost_usd: number
+}
+
+export interface ProjectResourceRecord {
+  resource_id: string
+  resource_type: string
+  region: string
+  owner_email: string
+  ownership_status: string
+  decision: string
+  reasoning: string | null
+  estimated_monthly_cost: number
+  estimated_monthly_savings: number
+}
+
+export interface ExecuteResourceResponse {
+  outcome: string
+  resource_id: string
+  action: string
+  detail: string
+}
+
+export interface IAMBindingResponse {
+  identity: string
+  role: string
+  project_id: string
+  binding_type: string
+  status: string
+  last_activity: string | null
+  days_inactive: string
 }
 
 export interface ProjectCostSummaryResponse {
@@ -69,6 +98,7 @@ export interface ProjectCostSummaryResponse {
   unattributed_usd: number
   period: string
   breakdown: CostBreakdownRow[]
+  resources: ProjectResourceRecord[]
 }
 
 export interface UserCostResourceResponse {
@@ -146,6 +176,35 @@ export async function getSummary(runId: string): Promise<RunSummary> {
   return handleResponse<RunSummary>(res)
 }
 
+export interface TraceEvent {
+  type: 'node_start' | 'node_end' | string
+  node: string
+  icon: string
+  color: string
+  ts: string
+  message: string
+  detail?: Array<{
+    resource_id: string
+    resource_type: string
+    decision?: string
+    reasoning?: string
+    savings?: number | null
+    outcome?: string
+  }>
+}
+
+export interface RunEventsResponse {
+  run_id: string
+  status: string
+  total: number
+  events: TraceEvent[]
+}
+
+export async function getRunEvents(runId: string, offset: number = 0): Promise<RunEventsResponse> {
+  const res = await fetch(`${API_BASE}/run/${runId}/events?offset=${offset}`)
+  return handleResponse<RunEventsResponse>(res)
+}
+
 // ---------------------------------------------------------------------------
 // IAM ticket endpoints
 // ---------------------------------------------------------------------------
@@ -212,4 +271,40 @@ export async function getUserCostSummary(
   const params = new URLSearchParams({ owner_email: ownerEmail, project_id: projectId })
   const res = await fetch(`${API_BASE}/cost/user?${params}`)
   return handleResponse<UserCostSummaryResponse>(res)
+}
+
+export async function getRecentProjects(): Promise<string[]> {
+  const res = await fetch(`${API_BASE}/cost/projects`)
+  const data = await handleResponse<{ project_ids: string[] }>(res)
+  return data.project_ids
+}
+
+export async function executeResourceAction(
+  resourceId: string,
+  resourceType: string,
+  decision: string,
+  projectId: string,
+  dryRun: boolean,
+): Promise<ExecuteResourceResponse> {
+  const res = await fetch(`${API_BASE}/cost/resource/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      resource_id: resourceId,
+      resource_type: resourceType,
+      decision: decision,
+      project_id: projectId,
+      dry_run: dryRun,
+    }),
+  })
+  return handleResponse<ExecuteResourceResponse>(res)
+}
+
+// ---------------------------------------------------------------------------
+// IAM inventory endpoint (Task 10.2)
+// ---------------------------------------------------------------------------
+
+export async function getIamInventory(projectId: string): Promise<IAMBindingResponse[]> {
+  const res = await fetch(`${API_BASE}/iam/inventory?project_id=${encodeURIComponent(projectId)}`)
+  return handleResponse<IAMBindingResponse[]>(res)
 }

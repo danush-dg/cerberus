@@ -90,7 +90,14 @@ async def revalidate_node(state: CerberusState) -> CerberusState:
     CASE 2 — Drift detected: downgrade decision to "needs_review", remove from
               approved_actions, and set error_message.
     CASE 3 — No change: resource remains in approved_actions.
+
+    Dry-run bypass: when state["dry_run"] is True, GCP calls are skipped and
+    all approved resources are treated as verified (no drift assumed).
     """
+    if state.get("dry_run"):
+        logger.info("revalidate_node: dry_run=True — skipping GCP revalidation, all approved resources treated as valid")
+        return state
+
     config = get_config()
     credentials = _load_credentials(config.service_account_key_path)
     project_id = state["project_id"]

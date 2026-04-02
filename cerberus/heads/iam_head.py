@@ -212,7 +212,7 @@ from google.oauth2 import service_account
 from cerberus.config import CerberusConfig, get_config
 from cerberus.models.iam_ticket import IAMBinding, IAMRequest, IAMTicket, SynthesizedIAMPlan
 from cerberus.tools.gcp_retry import CerberusRetryExhausted, gcp_call_with_retry
-from cerberus.tools.chroma_client import upsert_iam_ticket, query_iam_history
+from cerberus.tools.chroma_client import upsert_iam_ticket, query_iam_history, query_all_iam_history
 from cerberus.nodes.enrich_node import check_iam_last_activity, STALENESS_THRESHOLD_DAYS
 
 logger = logging.getLogger(__name__)
@@ -274,10 +274,21 @@ async def create_ticket(plan: SynthesizedIAMPlan) -> IAMTicket:
     tid = str(uuid.uuid4())
     ticket = IAMTicket(ticket_id=tid, plan=plan, status="pending", created_at=datetime.now(timezone.utc).isoformat())
     _tickets[tid] = ticket
-    # Persist initial request to ChromaDB
     try:
-        upsert_iam_ticket({"ticket_id": tid, "requester_email": plan.requester_email, "project_id": plan.project_id, "role": plan.role, "status": "pending", "created_at": ticket.created_at, "justification": plan.justification})
-    except Exception as e: logger.warning("create_ticket: ChromaDB failed: %s", e)
+        upsert_iam_ticket({
+            "ticket_id": tid,
+            "requester_email": plan.requester_email,
+            "project_id": plan.project_id,
+            "role": plan.role,
+            "status": "pending",
+            "created_at": ticket.created_at,
+            "justification": plan.justification,
+            "permissions": plan.permissions,
+            "raw_request": plan.raw_request,
+            "synthesized_at": plan.synthesized_at,
+        })
+    except Exception as e:
+        logger.warning("create_ticket: ChromaDB failed: %s", e)
     return ticket
 
 async def get_pending_tickets() -> list[IAMTicket]:
@@ -289,10 +300,23 @@ async def approve_ticket(ticket_id: str, reviewer_email: str) -> IAMTicket:
     ticket.status = "approved"
     ticket.reviewed_at = datetime.now(timezone.utc).isoformat()
     ticket.reviewed_by = reviewer_email
-    # Persist approval to ChromaDB
     try:
-        upsert_iam_ticket({"ticket_id": ticket_id, "requester_email": ticket.plan.requester_email, "project_id": ticket.plan.project_id, "role": ticket.plan.role, "status": "approved", "created_at": ticket.created_at, "justification": ticket.plan.justification})
-    except Exception as e: logger.warning("approve_ticket: ChromaDB failed: %s", e)
+        upsert_iam_ticket({
+            "ticket_id": ticket_id,
+            "requester_email": ticket.plan.requester_email,
+            "project_id": ticket.plan.project_id,
+            "role": ticket.plan.role,
+            "status": "approved",
+            "created_at": ticket.created_at,
+            "justification": ticket.plan.justification,
+            "permissions": ticket.plan.permissions,
+            "raw_request": ticket.plan.raw_request,
+            "synthesized_at": ticket.plan.synthesized_at,
+            "reviewed_at": ticket.reviewed_at,
+            "reviewed_by": ticket.reviewed_by,
+        })
+    except Exception as e:
+        logger.warning("approve_ticket: ChromaDB failed: %s", e)
     return ticket
 
 async def reject_ticket(ticket_id: str, reviewer_email: str) -> IAMTicket:
@@ -301,10 +325,23 @@ async def reject_ticket(ticket_id: str, reviewer_email: str) -> IAMTicket:
     ticket.status = "rejected"
     ticket.reviewed_at = datetime.now(timezone.utc).isoformat()
     ticket.reviewed_by = reviewer_email
-    # Persist rejection to ChromaDB
     try:
-        upsert_iam_ticket({"ticket_id": ticket_id, "requester_email": ticket.plan.requester_email, "project_id": ticket.plan.project_id, "role": ticket.plan.role, "status": "rejected", "created_at": ticket.created_at, "justification": ticket.plan.justification})
-    except Exception as e: logger.warning("reject_ticket: ChromaDB failed: %s", e)
+        upsert_iam_ticket({
+            "ticket_id": ticket_id,
+            "requester_email": ticket.plan.requester_email,
+            "project_id": ticket.plan.project_id,
+            "role": ticket.plan.role,
+            "status": "rejected",
+            "created_at": ticket.created_at,
+            "justification": ticket.plan.justification,
+            "permissions": ticket.plan.permissions,
+            "raw_request": ticket.plan.raw_request,
+            "synthesized_at": ticket.plan.synthesized_at,
+            "reviewed_at": ticket.reviewed_at,
+            "reviewed_by": ticket.reviewed_by,
+        })
+    except Exception as e:
+        logger.warning("reject_ticket: ChromaDB failed: %s", e)
     return ticket
 
 async def revoke_iam_binding(ticket_id: str, actor_email: str) -> dict:
@@ -471,6 +508,40 @@ async def provision_iam_binding(ticket: IAMTicket, dry_run: bool = True) -> dict
         logger.warning("Failed to persist ticket to ChromaDB: %s", e)
 
     return {"status": "SUCCESS", "role": role_name}
+
+
+def load_tickets_from_chroma() -> None:
+    """Restore _tickets from ChromaDB on server startup or first request."""
+    records = query_all_iam_history()
+    for rec in records:
+        tid = rec.get("ticket_id")
+        if not tid or tid in _tickets:
+            continue
+        try:
+            permissions_raw = rec.get("permissions", "[]")
+            permissions = json.loads(permissions_raw) if permissions_raw else []
+            plan = SynthesizedIAMPlan(
+                requester_email=rec.get("requester_email", ""),
+                project_id=rec.get("project_id", ""),
+                role=rec.get("role", ""),
+                permissions=permissions,
+                justification=rec.get("justification", ""),
+                synthesized_at=rec.get("synthesized_at") or rec.get("created_at", ""),
+                raw_request=rec.get("raw_request", ""),
+            )
+            ticket = IAMTicket(
+                ticket_id=tid,
+                plan=plan,
+                status=rec.get("status", "pending"),
+                created_at=rec.get("created_at", ""),
+                reviewed_at=rec.get("reviewed_at") or None,
+                reviewed_by=rec.get("reviewed_by") or None,
+            )
+            _tickets[tid] = ticket
+        except Exception as e:
+            logger.warning("load_tickets_from_chroma: failed to restore ticket %s: %s", tid, e)
+    logger.info("load_tickets_from_chroma: restored %d ticket(s) from ChromaDB", len(_tickets))
+
 
 async def get_iam_inventory(project_id: str, credentials) -> list[IAMBinding]:
     rm_client = resourcemanager_v3.ProjectsClient(credentials=credentials)

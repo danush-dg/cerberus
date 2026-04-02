@@ -4,6 +4,7 @@ import { ExecutePanel } from './components/ExecutePanel'
 import { IamPanel } from './components/IamPanel'
 import { CostCenter } from './components/CostCenter'
 import { SecurityHub } from './components/SecurityHub'
+import { AgentTrace } from './components/AgentTrace'
 import type { ResourceRow, RevalidationStatus, NavSection, IamTicket, SecurityAlert, IamPlan } from './types'
 import { MOCK_IDENTITY_DATA } from './types'
 import {
@@ -182,13 +183,14 @@ function NavItem({
   )
 }
 
-function StatusBadge({ status }: { status: 'pending' | 'approved' | 'rejected' }) {
-  const map = {
-    pending:  { bg: '#fff3cd', color: '#856404', label: 'Pending' },
-    approved: { bg: '#d4edda', color: '#155724', label: 'Approved' },
-    rejected: { bg: '#f8d7da', color: '#721c24', label: 'Rejected' },
+function StatusBadge({ status }: { status: 'pending' | 'approved' | 'rejected' | 'provisioned' }) {
+  const map: Record<string, { bg: string; color: string; label: string }> = {
+    pending:     { bg: '#fff3cd', color: '#856404', label: 'Pending' },
+    approved:    { bg: '#d4edda', color: '#155724', label: 'Approved' },
+    rejected:    { bg: '#f8d7da', color: '#721c24', label: 'Rejected' },
+    provisioned: { bg: '#e3f2fd', color: '#1565c0', label: 'Provisioned' },
   }
-  const s = map[status]
+  const s = map[status] ?? { bg: '#e9ecef', color: '#495057', label: status }
   return (
     <span style={{ padding: '3px 10px', borderRadius: 10, fontSize: 12, fontWeight: 600, background: s.bg, color: s.color }}>
       {s.label}
@@ -1226,6 +1228,12 @@ export default function App() {
           <TicketsView tickets={tickets} onRefresh={loadTickets} />
         )}
       </main>
+
+      {/* ── Global Agent Trace drawer ───────────────────────────────────── */}
+      <AgentTrace
+        runId={runId}
+        active={phase === 'scanning' || phase === 'executing'}
+      />
     </div>
   )
 }

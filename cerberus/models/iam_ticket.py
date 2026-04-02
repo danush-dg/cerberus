@@ -58,7 +58,7 @@ class SynthesizedIAMPlan(BaseModel):
 class IAMTicket(BaseModel):
     ticket_id: str
     plan: SynthesizedIAMPlan
-    status: Literal["pending", "approved", "rejected", "provisioned"]
+    status: Literal["pending", "approved", "rejected", "provisioned", "revoked"]
     created_at: str
     reviewed_at: str | None = None
     reviewed_by: str | None = None

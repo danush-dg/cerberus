@@ -62,7 +62,7 @@ export interface IamTicket {
   id: string
   ts: string
   plan: IamPlan
-  status: 'pending' | 'approved' | 'rejected'
+  status: 'pending' | 'approved' | 'rejected' | 'provisioned'
 }
 
 export interface IdentityRecord {

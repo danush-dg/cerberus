@@ -6,10 +6,29 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from cerberus.heads.iam_head import _tickets, approve_ticket, provision_iam_binding
+from cerberus.heads.iam_head import (
+    _tickets,
+    approve_ticket,
+    load_tickets_from_chroma,
+    provision_iam_binding,
+    reject_ticket,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+_chroma_loaded = False
+
+
+def _ensure_loaded() -> None:
+    """Load tickets from ChromaDB on first request (lazy startup restore)."""
+    global _chroma_loaded
+    if not _chroma_loaded:
+        _chroma_loaded = True
+        try:
+            load_tickets_from_chroma()
+        except Exception as exc:
+            logger.warning("_ensure_loaded: ChromaDB restore failed: %s", exc)
 
 
 class ApproveBody(BaseModel):
@@ -22,7 +41,8 @@ class ProvisionBody(BaseModel):
 
 @router.get("/tickets")
 async def get_tickets() -> JSONResponse:
-    """List all IAM tickets (all statuses)."""
+    """List all IAM tickets (all statuses), restoring from ChromaDB if needed."""
+    _ensure_loaded()
     return JSONResponse(
         status_code=200,
         content=[t.model_dump() for t in _tickets.values()],
@@ -32,6 +52,7 @@ async def get_tickets() -> JSONResponse:
 @router.post("/tickets/{ticket_id}/approve")
 async def post_ticket_approve(ticket_id: str, body: ApproveBody = ApproveBody()) -> JSONResponse:
     """Approve a pending IAM ticket."""
+    _ensure_loaded()
     try:
         ticket = await approve_ticket(ticket_id, body.reviewer_email)
         return JSONResponse(status_code=200, content=ticket.model_dump())
@@ -39,6 +60,20 @@ async def post_ticket_approve(ticket_id: str, body: ApproveBody = ApproveBody())
         return JSONResponse(status_code=404, content={"error": str(exc)})
     except Exception as exc:
         logger.exception("Ticket approve failed for %s", ticket_id)
+        return JSONResponse(status_code=500, content={"error": str(exc)})
+
+
+@router.post("/tickets/{ticket_id}/reject")
+async def post_ticket_reject(ticket_id: str, body: ApproveBody = ApproveBody()) -> JSONResponse:
+    """Reject a pending IAM ticket."""
+    _ensure_loaded()
+    try:
+        ticket = await reject_ticket(ticket_id, body.reviewer_email)
+        return JSONResponse(status_code=200, content=ticket.model_dump())
+    except KeyError as exc:
+        return JSONResponse(status_code=404, content={"error": str(exc)})
+    except Exception as exc:
+        logger.exception("Ticket reject failed for %s", ticket_id)
         return JSONResponse(status_code=500, content={"error": str(exc)})
 
 
@@ -51,6 +86,7 @@ async def post_ticket_provision(
     INV-IAM-02: ticket.status must be "approved" before provisioning.
     Pending, rejected, or already-provisioned tickets are rejected.
     """
+    _ensure_loaded()
     ticket = _tickets.get(ticket_id)
     if not ticket:
         return JSONResponse(status_code=404, content={"error": "Ticket not found."})

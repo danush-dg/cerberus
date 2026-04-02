@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 from datetime import datetime
@@ -151,16 +152,17 @@ def query_owner_history(owner_email: str, project_id: str) -> list[dict]:
         )
         return []
 def upsert_iam_ticket(ticket_data: dict) -> None:
-    """Store an approved IAM ticket in ChromaDB."""
+    """Store an IAM ticket in ChromaDB with all fields needed for full reconstruction."""
     try:
         collection = get_chroma_collection(IAM_COLLECTION_NAME)
         ticket_id = ticket_data["ticket_id"]
-        
+
         document = (
             f"IAM Ticket {ticket_id} for {ticket_data['requester_email']} "
             f"role {ticket_data['role']} in {ticket_data['project_id']}"
         )
-        
+
+        permissions = ticket_data.get("permissions", [])
         metadata = {
             "ticket_id": ticket_id,
             "requester_email": ticket_data["requester_email"],
@@ -169,8 +171,14 @@ def upsert_iam_ticket(ticket_data: dict) -> None:
             "status": ticket_data["status"],
             "created_at": ticket_data["created_at"],
             "justification": ticket_data.get("justification", ""),
+            # Full reconstruction fields
+            "permissions": json.dumps(permissions if isinstance(permissions, list) else []),
+            "raw_request": ticket_data.get("raw_request", ""),
+            "synthesized_at": ticket_data.get("synthesized_at", ""),
+            "reviewed_at": ticket_data.get("reviewed_at") or "",
+            "reviewed_by": ticket_data.get("reviewed_by") or "",
         }
-        
+
         collection.upsert(
             documents=[document],
             metadatas=[metadata],
@@ -190,4 +198,35 @@ def query_iam_history(project_id: str) -> list[dict]:
         return []
     except Exception as e:
         logger.warning("ChromaDB query_iam_history failed for project=%s: %s", project_id, e)
+        return []
+
+
+def query_all_iam_history() -> list[dict]:
+    """Return all IAM tickets stored in ChromaDB (all projects)."""
+    try:
+        collection = get_chroma_collection(IAM_COLLECTION_NAME)
+        result = collection.get()
+        if result and result["metadatas"]:
+            return result["metadatas"]
+        return []
+    except Exception as e:
+        logger.warning("ChromaDB query_all_iam_history failed: %s", e)
+        return []
+
+
+def query_all_project_ids() -> list[str]:
+    """Return all unique project_ids present in the resource_history collection."""
+    try:
+        collection = get_chroma_collection(COLLECTION_NAME)
+        result = collection.get()
+        if not result or not result["metadatas"]:
+            return []
+        seen: set[str] = set()
+        for meta in result["metadatas"]:
+            pid = meta.get("project_id")
+            if pid:
+                seen.add(pid)
+        return sorted(seen)
+    except Exception as e:
+        logger.warning("ChromaDB query_all_project_ids failed: %s", e)
         return []

@@ -10,6 +10,7 @@ class ProjectCostSummary(BaseModel):
     unattributed_usd: float
     period: str               # "current_month"
     breakdown: list[dict]     # [{"owner_email": str, "cost_usd": float}]
+    resources: list[dict] = []  # full resource records with decision/reasoning
 
 
 class UserCostSummary(BaseModel):
