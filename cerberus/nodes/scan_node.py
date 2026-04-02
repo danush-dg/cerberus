@@ -8,7 +8,7 @@ from google.cloud import compute_v1, monitoring_v3, billing_v1
 from google.oauth2 import service_account
 from google.protobuf import duration_pb2
 
-from cerberus.state import CerberusState, validate_resource_record
+from cerberus.state import CerberusState, validate_resource_record, push_trace_event
 from cerberus.config import get_config, validate_project_id
 from cerberus.tools.gcp_retry import gcp_call_with_retry, CerberusRetryExhausted
 
@@ -16,6 +16,45 @@ logger = logging.getLogger(__name__)
 
 CPU_IDLE_THRESHOLD: float = 0.05
 CPU_IDLE_WINDOW_HOURS: int = 72
+HOURS_PER_MONTH: float = 730.0
+COMPUTE_SERVICE_ID: str = "6F81-5844-456A"
+
+# vCPUs and memory (GB) for common GCP machine types — avoids per-VM API calls.
+# Unknown types fall back to MachineTypesClient.get.
+_MACHINE_SPECS: dict[str, tuple[int, float]] = {
+    # N1 standard
+    "n1-standard-1": (1, 3.75),    "n1-standard-2": (2, 7.5),    "n1-standard-4": (4, 15.0),
+    "n1-standard-8": (8, 30.0),    "n1-standard-16": (16, 60.0), "n1-standard-32": (32, 120.0),
+    "n1-standard-64": (64, 240.0), "n1-standard-96": (96, 360.0),
+    # N1 highmem / highcpu
+    "n1-highmem-2": (2, 13.0),     "n1-highmem-4": (4, 26.0),   "n1-highmem-8": (8, 52.0),
+    "n1-highmem-16": (16, 104.0),  "n1-highmem-32": (32, 208.0), "n1-highmem-64": (64, 416.0),
+    "n1-highcpu-4": (4, 3.6),      "n1-highcpu-8": (8, 7.2),    "n1-highcpu-16": (16, 14.4),
+    "n1-highcpu-32": (32, 28.8),   "n1-highcpu-64": (64, 57.6),
+    # N2 standard / highmem
+    "n2-standard-2": (2, 8.0),     "n2-standard-4": (4, 16.0),  "n2-standard-8": (8, 32.0),
+    "n2-standard-16": (16, 64.0),  "n2-standard-32": (32, 128.0), "n2-standard-48": (48, 192.0),
+    "n2-standard-64": (64, 256.0), "n2-standard-80": (80, 320.0),
+    "n2-highmem-2": (2, 16.0),     "n2-highmem-4": (4, 32.0),   "n2-highmem-8": (8, 64.0),
+    "n2-highmem-16": (16, 128.0),  "n2-highmem-32": (32, 256.0), "n2-highmem-48": (48, 384.0),
+    "n2-highmem-64": (64, 512.0),
+    # E2
+    "e2-standard-2": (2, 8.0),     "e2-standard-4": (4, 16.0),  "e2-standard-8": (8, 32.0),
+    "e2-standard-16": (16, 64.0),  "e2-standard-32": (32, 128.0),
+    "e2-highmem-2": (2, 16.0),     "e2-highmem-4": (4, 32.0),   "e2-highmem-8": (8, 64.0),
+    "e2-highmem-16": (16, 128.0),
+    "e2-highcpu-2": (2, 2.0),      "e2-highcpu-4": (4, 4.0),    "e2-highcpu-8": (8, 8.0),
+    "e2-highcpu-16": (16, 16.0),   "e2-highcpu-32": (32, 32.0),
+    "e2-micro": (2, 1.0),          "e2-small": (2, 2.0),         "e2-medium": (2, 4.0),
+    # Shared-core
+    "f1-micro": (1, 0.6),          "g1-small": (1, 1.7),
+    # N2D
+    "n2d-standard-2": (2, 8.0),    "n2d-standard-4": (4, 16.0), "n2d-standard-8": (8, 32.0),
+    "n2d-standard-16": (16, 64.0), "n2d-standard-32": (32, 128.0),
+    # C2
+    "c2-standard-4": (4, 16.0),    "c2-standard-8": (8, 32.0),  "c2-standard-16": (16, 64.0),
+    "c2-standard-30": (30, 120.0), "c2-standard-60": (60, 240.0),
+}
 
 
 def _load_credentials(key_path: str):
@@ -97,6 +136,7 @@ def discover_vms(project_id: str, credentials) -> list[dict]:
                 )
                 last_activity_timestamp = creation_ts
 
+            mt_name = (instance.machine_type or "").rsplit("/", 1)[-1]
             results.append(
                 {
                     "resource_id": instance.name,
@@ -113,6 +153,8 @@ def discover_vms(project_id: str, credentials) -> list[dict]:
                     "reasoning": None,
                     "estimated_monthly_savings": None,
                     "outcome": None,
+                    "_machine_type": mt_name,
+                    "_zone": zone,
                 }
             )
 
@@ -144,6 +186,7 @@ def discover_orphaned_disks(project_id: str, credentials) -> list[dict]:
             labels = dict(getattr(disk, "labels", {}) or {})
             flagged = labels.get("data-classification") == "sensitive"
 
+            disk_type_name = (getattr(disk, "type", "") or "").rsplit("/", 1)[-1]
             results.append(
                 {
                     "resource_id": disk.name,
@@ -160,6 +203,8 @@ def discover_orphaned_disks(project_id: str, credentials) -> list[dict]:
                     "reasoning": None,
                     "estimated_monthly_savings": None,
                     "outcome": None,
+                    "_disk_size_gb": int(getattr(disk, "size_gb", 0) or 0),
+                    "_disk_type": disk_type_name,
                 }
             )
     return results
@@ -211,24 +256,215 @@ def discover_unused_ips(project_id: str, credentials) -> list[dict]:
     return results
 
 
+def _sku_unit_price_usd(sku) -> float:
+    """Return the lowest-tier unit price in USD from a billing SKU."""
+    for pi in sku.pricing_info:
+        for rate in pi.pricing_expression.tiered_rates:
+            if rate.start_usage_amount == 0:
+                m = rate.unit_price
+                return float(m.units) + float(m.nanos) / 1_000_000_000
+    return 0.0
+
+
+def _fetch_compute_pricing(
+    catalog_client, regions: set[str]
+) -> dict[str, dict[str, float]]:
+    """Fetch Compute Engine SKU pricing from Cloud Catalog for the given regions.
+
+    CPU/RAM prices: USD per vCPU-hour or per GB-hour.
+    Disk prices: USD per GB-month.
+    Static IP prices: USD per IP-hour.
+    """
+    pricing: dict[str, dict[str, float]] = {
+        "n1_cpu": {}, "n1_ram": {},
+        "n2_cpu": {}, "n2_ram": {},
+        "n2d_cpu": {}, "n2d_ram": {},
+        "e2_cpu": {}, "e2_ram": {},
+        "c2_cpu": {}, "c2_ram": {},
+        "pd_standard": {}, "pd_ssd": {},
+        "f1_micro": {}, "g1_small": {},
+        "static_ip": {},
+    }
+    try:
+        skus = gcp_call_with_retry(
+            catalog_client.list_skus,
+            parent=f"services/{COMPUTE_SERVICE_ID}",
+        )
+        for sku in skus:
+            cat = sku.category
+            if cat.usage_type not in ("OnDemand", ""):
+                continue
+            sku_regions = set(sku.service_regions)
+            relevant = regions if "global" in sku_regions else (regions & sku_regions)
+            if not relevant:
+                continue
+            price = _sku_unit_price_usd(sku)
+            if price <= 0.0:
+                continue
+            desc = sku.description.lower()
+
+            if cat.resource_family == "Compute" and cat.resource_group == "CPU":
+                for family in ("n1", "n2d", "n2", "e2", "c2"):
+                    if desc.startswith(f"{family} "):
+                        d = pricing[f"{family}_cpu"]
+                        for r in relevant:
+                            d.setdefault(r, price)
+                        break
+            elif cat.resource_family == "Compute" and cat.resource_group == "RAM":
+                for family in ("n1", "n2d", "n2", "e2", "c2"):
+                    if desc.startswith(f"{family} "):
+                        d = pricing[f"{family}_ram"]
+                        for r in relevant:
+                            d.setdefault(r, price)
+                        break
+            elif cat.resource_family == "Compute" and "micro instance" in desc:
+                for r in relevant:
+                    pricing["f1_micro"].setdefault(r, price)
+            elif cat.resource_family == "Compute" and "small instance" in desc:
+                for r in relevant:
+                    pricing["g1_small"].setdefault(r, price)
+            elif cat.resource_family == "Storage" and "storage pd capacity" in desc and "ssd" not in desc:
+                for r in relevant:
+                    pricing["pd_standard"].setdefault(r, price)
+            elif cat.resource_family == "Storage" and "ssd backed pd" in desc:
+                for r in relevant:
+                    pricing["pd_ssd"].setdefault(r, price)
+            elif "static ip" in desc:
+                for r in relevant:
+                    pricing["static_ip"].setdefault(r, price)
+    except Exception as e:
+        logger.warning("CloudCatalog SKU fetch partial/failed: %s", e)
+    return pricing
+
+
+def _machine_vcpus_memory(
+    machine_type: str, zone: str, project_id: str, credentials
+) -> tuple[int, float] | None:
+    """Return (vcpus, memory_gb) for a machine type. Lookup table first, API fallback."""
+    specs = _MACHINE_SPECS.get(machine_type)
+    if specs:
+        return specs
+    try:
+        client = compute_v1.MachineTypesClient(credentials=credentials)
+        mt = gcp_call_with_retry(
+            client.get, project=project_id, zone=zone, machine_type=machine_type
+        )
+        return mt.guest_cpus, mt.memory_mb / 1024.0
+    except Exception as exc:
+        logger.warning("Cannot resolve machine type specs for %s: %s", machine_type, exc)
+        return None
+
+
+def _estimate_vm_cost(
+    resource: dict,
+    pricing: dict[str, dict[str, float]],
+    project_id: str,
+    credentials,
+) -> float | None:
+    """Estimate monthly on-demand cost for a VM from SKU pricing × machine specs."""
+    machine_type = resource.get("_machine_type", "")
+    zone = resource.get("_zone", "")
+    region = resource.get("region", "")
+    if not machine_type:
+        return None
+
+    prefix = machine_type.split("-")[0].lower()
+
+    if prefix == "f1":
+        price = pricing["f1_micro"].get(region)
+        return round(price * HOURS_PER_MONTH, 4) if price else None
+    if prefix == "g1":
+        price = pricing["g1_small"].get(region)
+        return round(price * HOURS_PER_MONTH, 4) if price else None
+
+    specs = _machine_vcpus_memory(machine_type, zone, project_id, credentials)
+    if not specs:
+        return None
+    vcpus, memory_gb = specs
+
+    cpu_price = pricing.get(f"{prefix}_cpu", {}).get(region) or pricing["n1_cpu"].get(region)
+    ram_price = pricing.get(f"{prefix}_ram", {}).get(region) or pricing["n1_ram"].get(region)
+    if not cpu_price or not ram_price:
+        return None
+
+    return round((vcpus * cpu_price + memory_gb * ram_price) * HOURS_PER_MONTH, 4)
+
+
+def _estimate_disk_cost(
+    resource: dict, pricing: dict[str, dict[str, float]]
+) -> float | None:
+    """Estimate monthly cost for an orphaned disk (price is already per GB-month)."""
+    size_gb = resource.get("_disk_size_gb") or 0
+    disk_type = (resource.get("_disk_type") or "pd-standard").lower()
+    region = resource.get("region", "")
+    if not size_gb:
+        return None
+    price_key = "pd_ssd" if "ssd" in disk_type else "pd_standard"
+    price_per_gb = pricing[price_key].get(region)
+    if not price_per_gb:
+        return None
+    return round(size_gb * price_per_gb, 4)
+
+
+def _estimate_ip_cost(
+    resource: dict, pricing: dict[str, dict[str, float]]
+) -> float | None:
+    """Estimate monthly cost for an unused static IP."""
+    region = resource.get("region", "")
+    price_per_hour = pricing["static_ip"].get(region)
+    if not price_per_hour:
+        return None
+    return round(price_per_hour * HOURS_PER_MONTH, 4)
+
+
 def fetch_resource_costs(
     project_id: str,
-    resource_ids: list[str],
+    resources: list[dict],
     billing_account_id: str,
     credentials,
 ) -> dict[str, float]:
+    """Estimate monthly costs per resource using Cloud Billing SKU pricing.
+
+    Confirms billing is active, fetches Compute Engine SKU prices via
+    CloudCatalogClient, then estimates cost from resource specs × published
+    on-demand prices. Returns {} on any billing API failure so callers treat
+    missing entries as None (INV-SCAN-04).
+    """
     try:
-        client = billing_v1.CloudBillingClient(credentials=credentials)
+        billing_client = billing_v1.CloudBillingClient(credentials=credentials)
         billing_info = gcp_call_with_retry(
-            client.get_project_billing_info,
+            billing_client.get_project_billing_info,
             name=f"projects/{project_id}",
         )
         if not billing_info.billing_enabled:
             logger.warning("Billing not enabled for project %s", project_id)
             return {}
-        # Billing confirmed active. Per-resource spend requires BigQuery export
-        # (not available in this API). Return 0.0 for all known resource IDs.
-        return {rid: 0.0 for rid in resource_ids}
+
+        catalog_client = billing_v1.CloudCatalogClient(credentials=credentials)
+        regions = {r.get("region") for r in resources if r.get("region")}
+        pricing = _fetch_compute_pricing(catalog_client, regions)
+
+        cost_map: dict[str, float] = {}
+        for resource in resources:
+            rid = resource["resource_id"]
+            rtype = resource.get("resource_type")
+            if rtype == "vm":
+                cost = _estimate_vm_cost(resource, pricing, project_id, credentials)
+            elif rtype == "orphaned_disk":
+                cost = _estimate_disk_cost(resource, pricing)
+            elif rtype == "unused_ip":
+                cost = _estimate_ip_cost(resource, pricing)
+            else:
+                cost = None
+            if cost is not None:
+                cost_map[rid] = cost
+
+        logger.info(
+            "Billing estimates: %d/%d resources priced for project %s",
+            len(cost_map), len(resources), project_id,
+        )
+        return cost_map
+
     except CerberusRetryExhausted:
         logger.error("Billing API retry exhausted for project %s", project_id)
         return {}
@@ -238,12 +474,9 @@ def fetch_resource_costs(
 
 
 def enrich_costs(resources: list[dict], cost_map: dict[str, float]) -> list[dict]:
+    """Apply cost estimates to resources. Missing entries stay None (INV-SCAN-04)."""
     for resource in resources:
-        rid = resource["resource_id"]
-        if cost_map:
-            resource["estimated_monthly_cost"] = cost_map.get(rid, 0.0)
-        else:
-            resource["estimated_monthly_cost"] = None
+        resource["estimated_monthly_cost"] = cost_map.get(resource["resource_id"])
     return resources
 
 
@@ -293,7 +526,18 @@ async def scan_node(state: CerberusState) -> CerberusState:
     # Step 3 — Full discovery inside asyncio.wait_for (INV-NFR-01: 60s timeout)
     valid_resources: list[dict] = []
 
+    _run_id = state["run_id"]
+
     async def _discover() -> list[dict]:
+        push_trace_event(_run_id, {
+            "type": "scan_progress",
+            "node": "scan_node",
+            "icon": "📡",
+            "color": "#1f77b4",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "message": "Scanning GCE instances, orphaned disks, and unused IPs in parallel…",
+        })
+
         vm_list, disk_list, ip_list = await asyncio.gather(
             asyncio.to_thread(discover_vms, state["project_id"], credentials),
             asyncio.to_thread(discover_orphaned_disks, state["project_id"], credentials),
@@ -301,10 +545,27 @@ async def scan_node(state: CerberusState) -> CerberusState:
         )
         all_resources = vm_list + disk_list + ip_list
 
-        resource_ids = [r["resource_id"] for r in all_resources]
+        push_trace_event(_run_id, {
+            "type": "scan_progress",
+            "node": "scan_node",
+            "icon": "📡",
+            "color": "#1f77b4",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "message": f"Discovery complete — {len(vm_list)} VM(s) · {len(disk_list)} orphaned disk(s) · {len(ip_list)} unused IP(s)",
+        })
+
+        push_trace_event(_run_id, {
+            "type": "scan_progress",
+            "node": "scan_node",
+            "icon": "💰",
+            "color": "#1f77b4",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "message": f"Fetching billing data for {len(all_resources)} resource(s)…",
+        })
+
         cost_map = fetch_resource_costs(
             state["project_id"],
-            resource_ids,
+            all_resources,
             config.billing_account_id,
             credentials,
         )

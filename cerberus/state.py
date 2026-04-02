@@ -60,6 +60,30 @@ def validate_resource_record(record: dict) -> "ResourceRecord":
     return record  # type: ignore[return-value]
 
 
+# ---------------------------------------------------------------------------
+# Runtime event bus — nodes push granular trace events here; api.py drains them.
+# All callers run inside the same asyncio event loop so no lock is needed.
+# ---------------------------------------------------------------------------
+
+_event_bus: dict[str, list] = {}
+
+
+def init_event_bus(run_id: str) -> None:
+    _event_bus[run_id] = []
+
+
+def push_trace_event(run_id: str, event: dict) -> None:
+    if run_id in _event_bus:
+        _event_bus[run_id].append(event)
+
+
+def drain_trace_events(run_id: str) -> list[dict]:
+    events = list(_event_bus.get(run_id, []))
+    if run_id in _event_bus:
+        _event_bus[run_id] = []
+    return events
+
+
 def initialise_state(project_id: str, dry_run: bool = True) -> CerberusState:
     return CerberusState(
         project_id=project_id,

@@ -9,7 +9,7 @@ from google.oauth2 import service_account
 from google.api_core.exceptions import Forbidden
 
 from cerberus.config import get_config
-from cerberus.state import CerberusState
+from cerberus.state import CerberusState, push_trace_event
 from cerberus.tools.gcp_retry import gcp_call_with_retry, CerberusRetryExhausted
 
 logger = logging.getLogger(__name__)
@@ -248,8 +248,18 @@ async def enrich_node(state: CerberusState) -> CerberusState:
     credentials = _load_credentials(config.service_account_key_path)
     project_id = state["project_id"]
     resources = state["resources"]
+    run_id = state["run_id"]
+    total = len(resources)
 
-    for resource in resources:
+    for idx, resource in enumerate(resources):
+        push_trace_event(run_id, {
+            "type": "enrich_progress",
+            "node": "enrich_node",
+            "icon": "🔍",
+            "color": "#7b1fa2",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "message": f"Resolving owner: {resource.get('resource_id', '?')} ({idx + 1}/{total})",
+        })
         try:
             resolved_email = resolve_owner(resource, project_id, credentials)
             ownership_status, owner_iam_active = classify_ownership(

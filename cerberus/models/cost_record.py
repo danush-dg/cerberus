@@ -11,6 +11,7 @@ class ProjectCostSummary(BaseModel):
     period: str               # "current_month"
     breakdown: list[dict]     # [{"owner_email": str, "cost_usd": float}]
     resources: list[dict] = []  # full resource records with decision/reasoning
+    ghost_resources: list[dict] = []  # resources with safe_to_stop or safe_to_delete decision
 
 
 class UserCostSummary(BaseModel):

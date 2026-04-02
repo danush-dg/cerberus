@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Literal, TYPE_CHECKING
 
 from google import genai
@@ -11,7 +12,7 @@ from google.genai import types
 from pydantic import BaseModel
 
 from cerberus.config import get_config
-from cerberus.state import VALID_DECISIONS, CerberusState
+from cerberus.state import VALID_DECISIONS, CerberusState, push_trace_event
 from cerberus.tools.chroma_client import query_resource_history, query_owner_history
 
 if TYPE_CHECKING:
@@ -183,9 +184,44 @@ async def classify_resource(
 async def reason_node(state: CerberusState) -> CerberusState:
     cfg = get_config()
     client = genai.Client(api_key=cfg.gemini_api_key)
+    run_id = state["run_id"]
+    total = len(state["resources"])
 
     for i, resource in enumerate(state["resources"]):
+        rid = resource.get("resource_id", "?")
+        rtype = resource.get("resource_type", "?")
+
+        push_trace_event(run_id, {
+            "type": "llm_thinking",
+            "node": "reason_node",
+            "icon": "🧠",
+            "color": "#ff9800",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "message": f"Gemini analyzing {rid} ({rtype}) — {i + 1}/{total}",
+        })
+
         state["resources"][i] = await classify_resource(resource, client, cfg.gemini_model)
+        result = state["resources"][i]
+        decision = result.get("decision") or "?"
+        savings = result.get("estimated_monthly_savings")
+        savings_str = f" · ${savings:.0f}/mo saved" if savings else ""
+
+        push_trace_event(run_id, {
+            "type": "llm_result",
+            "node": "reason_node",
+            "icon": "✦",
+            "color": "#ff9800",
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "message": f"→ {rid}: {decision}{savings_str}",
+            "detail": [{
+                "resource_id": rid,
+                "resource_type": rtype,
+                "decision": decision,
+                "reasoning": result.get("reasoning") or "—",
+                "savings": savings,
+            }],
+        })
+
         await asyncio.sleep(GEMINI_INTER_REQUEST_DELAY_SECONDS)
 
     # Belt-and-suspenders assertion (INV-RSN-01)
